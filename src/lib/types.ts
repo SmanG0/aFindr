@@ -24,6 +24,11 @@ export const CONTRACTS: Record<string, ContractConfig> = {
   "CL=F": { symbol: "CL=F", name: "CL (Crude Oil)", pointValue: 1000, tickSize: 0.01 },
 };
 
+/** Returns the contract config for known futures, or a stock-like default (1 share = 1 unit) */
+export function getContractConfig(symbol: string): ContractConfig {
+  return CONTRACTS[symbol] ?? { symbol, name: symbol, pointValue: 1, tickSize: 0.01 };
+}
+
 // Trade record from backtest
 export interface Trade {
   id: number;
@@ -56,6 +61,81 @@ export interface BacktestMetrics {
   sharpeRatio: number;
   avgWin: number;
   avgLoss: number;
+  // Advanced metrics
+  sortinoRatio?: number;
+  calmarRatio?: number;
+  recoveryFactor?: number;
+  expectancy?: number;
+  expectancyRatio?: number;
+  payoffRatio?: number;
+}
+
+// Monte Carlo simulation result
+export interface MonteCarloResult {
+  numSimulations: number;
+  numTrades: number;
+  meanReturn: number;
+  medianReturn: number;
+  stdReturn: number;
+  percentile5: number;
+  percentile25: number;
+  percentile75: number;
+  percentile95: number;
+  meanMaxDrawdown: number;
+  medianMaxDrawdown: number;
+  worstMaxDrawdown: number;
+  percentile95Drawdown: number;
+  probabilityOfRuin: number;
+  probabilityOfProfit: number;
+  equityPercentiles: {
+    p5: number[];
+    p25: number[];
+    p50: number[];
+    p75: number[];
+    p95: number[];
+  };
+}
+
+// Walk-forward analysis result
+export interface WalkForwardResult {
+  numWindows: number;
+  isRatio: number;
+  windows: {
+    windowIndex: number;
+    isStart: string;
+    isEnd: string;
+    oosStart: string;
+    oosEnd: string;
+    isBars: number;
+    oosBars: number;
+    isMetrics: Record<string, number>;
+    oosMetrics: Record<string, number>;
+    bestParams: Record<string, number>;
+  }[];
+  aggregateOosMetrics: Record<string, number>;
+  oosTrades: Trade[];
+  oosEquityCurve: { time: number; value: number }[];
+  robustnessRatio: number;
+}
+
+// Trade pattern analysis result
+export interface TradeAnalysisResult {
+  totalTradesAnalyzed: number;
+  bestEntryHours: { hour: number; avgPnl: number; tradeCount: number; winRate: number }[];
+  bestEntryDays: { dayName: string; avgPnl: number; tradeCount: number; winRate: number }[];
+  tradeScores: { tradeId: number; score: number; factors: Record<string, number>; pnl: number }[];
+  avgScoreWinners: number;
+  avgScoreLosers: number;
+  avgAtrBeforeWinners: number;
+  avgAtrBeforeLosers: number;
+  momentumBeforeWinners: number;
+  momentumBeforeLosers: number;
+  avgMaeWinners: number;
+  avgMaeLosers: number;
+  avgMfeWinners: number;
+  avgMfeLosers: number;
+  avgContinuationAfterWin: number;
+  avgContinuationAfterLoss: number;
 }
 
 // Full backtest result
@@ -92,6 +172,9 @@ export interface ChatMessage {
   timestamp: number;
   strategyResult?: BacktestResult;
   pinescriptResult?: PineScriptResult;
+  monteCarloResult?: MonteCarloResult;
+  walkForwardResult?: WalkForwardResult;
+  tradeAnalysisResult?: TradeAnalysisResult;
 }
 
 // Tick data from Databento
@@ -127,6 +210,9 @@ export interface ChatResponse {
   strategy?: GeneratedStrategy;
   backtestResult?: BacktestResult;
   pinescript?: PineScriptResult;
+  monteCarlo?: MonteCarloResult;
+  walkForward?: WalkForwardResult;
+  tradeAnalysis?: TradeAnalysisResult;
 }
 
 export interface DataRequest {
@@ -195,15 +281,44 @@ export interface RiskSettings {
   presetTpPct: number | null;
 }
 
+export type AppTheme = "dark-amber" | "midnight-blue" | "forest-green" | "classic-light" | "obsidian";
+export type AppCurrency = "KES" | "USD" | "GBP" | "EUR";
+export type AppBroker = "egm" | "dyer-blair" | "faida" | "genghis" | "sbg" | "standard-inv" | "aib-axys" | "none";
+export type FundingMethod = "mpesa" | "airtel-money" | "tkash" | "kcb-mpesa" | "equity-eazzy" | "bank-rtgs" | "visa-mc" | "none";
+
 export interface AppSettings {
+  // Appearance
+  theme: AppTheme;
+
+  // Broker & Connection
+  broker: AppBroker;
+  brokerAccountId: string;
+  fundingMethod: FundingMethod;
+
+  // Account
+  currency: AppCurrency;
+  language: string;
+  marketRegion: string;
+
+  // Trading
   oneClickTrading: boolean;
   tradeExecutionSound: boolean;
-  showNotifications: boolean;
-  notificationDuration: number;
-  showTradeHistoryOnChart: boolean;
-  bigLotThreshold: number;
   showBuySellButtons: boolean;
   showPositionsOnChart: boolean;
   reversePositionButton: boolean;
   showPnlOnChart: boolean;
+  defaultOrderType: "market" | "limit";
+  defaultLotSize: number;
+
+  // Notifications
+  showNotifications: boolean;
+  notificationDuration: number;
+  pushNotifications: boolean;
+  smsAlerts: boolean;
+  smsPhone: string;
+
+  // Display
+  showTradeHistoryOnChart: boolean;
+  bigLotThreshold: number;
+  compactMode: boolean;
 }
