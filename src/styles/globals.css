@@ -510,6 +510,53 @@ body {
   transform: translateY(0);
 }
 
+/* ─── Strategy Tester ─── */
+.fan-band {
+  transition: opacity 100ms ease;
+}
+.fan-band:hover {
+  opacity: 0.9;
+}
+
+.heatmap-bar {
+  transition: opacity 100ms ease;
+}
+.heatmap-bar:hover {
+  opacity: 1 !important;
+}
+
+.strategy-card {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(236,227,213,0.03);
+  border: 1px solid rgba(236,227,213,0.06);
+  transition: all 100ms ease;
+  cursor: pointer;
+}
+.strategy-card:hover {
+  background: rgba(236,227,213,0.06);
+  border-color: rgba(236,227,213,0.1);
+}
+
+.broker-tile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(236,227,213,0.03);
+  border: 1px solid rgba(236,227,213,0.06);
+  cursor: pointer;
+  transition: all 100ms ease;
+}
+.broker-tile:hover {
+  background: rgba(236,227,213,0.06);
+}
+.broker-tile.active {
+  border-color: var(--accent);
+  background: rgba(236,227,213,0.08);
+}
+
 /* ─── Settings Panel Slide ─── */
 .settings-slide {
   position: fixed;
