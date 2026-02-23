@@ -257,8 +257,8 @@ export default function NewsFeed({ isOpen, onClose }: NewsFeedProps) {
                     {sentimentIcon(item.sentiment)}
                     <span
                       style={{
-                        fontSize: 9,
-                        fontWeight: 600,
+                        fontSize: 11,
+                        fontWeight: 400,
                         fontFamily: "var(--font-mono)",
                         color: item.sourceColor,
                         textTransform: "uppercase",
@@ -313,7 +313,8 @@ export default function NewsFeed({ isOpen, onClose }: NewsFeedProps) {
             style={{
               padding: "6px 12px",
               borderTop: "1px solid var(--divider)",
-              fontSize: 9,
+              fontSize: 11,
+              fontWeight: 400,
               color: "var(--text-disabled)",
               fontFamily: "var(--font-mono)",
               textAlign: "center",

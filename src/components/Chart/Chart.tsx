@@ -7,6 +7,7 @@ import {
   CandlestickSeries,
   HistogramSeries,
   LineStyle,
+  CrosshairMode,
   type IChartApi,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
@@ -17,6 +18,9 @@ import {
 } from "lightweight-charts";
 import { motion, AnimatePresence } from "framer-motion";
 import type { Candle, Trade, Position } from "@/lib/types";
+import type { IndicatorResult, IndicatorConfig } from "@/lib/indicators";
+import { INDICATOR_DEFS } from "@/lib/indicators";
+import { LineSeries } from "lightweight-charts";
 
 // ─── Context Menu Types ───
 interface ContextMenuState {
@@ -25,6 +29,40 @@ interface ContextMenuState {
   y: number;
   price: number;
 }
+
+// ─── Chart Appearance Settings ───
+export interface ChartAppearance {
+  backgroundColor: string;
+  upColor: string;
+  downColor: string;
+  upWickColor: string;
+  downWickColor: string;
+  borderUpColor: string;
+  borderDownColor: string;
+  gridColor: string;
+}
+
+export const DEFAULT_DARK_APPEARANCE: ChartAppearance = {
+  backgroundColor: "transparent",
+  upColor: "#22c55e",
+  downColor: "#ef4444",
+  upWickColor: "rgba(34,197,94,0.6)",
+  downWickColor: "rgba(239,68,68,0.6)",
+  borderUpColor: "#22c55e",
+  borderDownColor: "#ef4444",
+  gridColor: "rgba(236,227,213,0.03)",
+};
+
+export const DEFAULT_LIGHT_APPEARANCE: ChartAppearance = {
+  backgroundColor: "#ffffff",
+  upColor: "#26a65b",
+  downColor: "#131722",
+  upWickColor: "#131722",
+  downWickColor: "#131722",
+  borderUpColor: "#131722",
+  borderDownColor: "#131722",
+  gridColor: "rgba(0,0,0,0.06)",
+};
 
 interface ChartProps {
   candles: Candle[];
@@ -35,7 +73,10 @@ interface ChartProps {
   replayBarIndex?: number;
   activeTool?: string;
   onChartClick?: (barIndex: number, price: number) => void;
+  onDrawingClick?: (time: number, price: number) => void;
   theme?: "dark" | "light";
+  appearance?: ChartAppearance;
+  onAppearanceChange?: (appearance: ChartAppearance) => void;
   // ─── NEW: Trading integration props ───
   positions?: Position[];
   currentPrice?: number;
@@ -46,6 +87,16 @@ interface ChartProps {
   onClosePosition?: (id: string) => void;
   onAddAlert?: (price: number) => void;
   showBuySellButtons?: boolean;
+  spread?: number;
+  // ─── Indicators ───
+  indicators?: IndicatorResult[];
+  indicatorConfigs?: IndicatorConfig[];
+  onEditIndicator?: (config: IndicatorConfig) => void;
+  // ─── Drawing magnet mode ───
+  magnetEnabled?: boolean;
+  // ─── Expose chart/series refs for DrawingOverlay ───
+  onChartReady?: (chart: IChartApi, series: ISeriesApi<"Candlestick">) => void;
+  children?: React.ReactNode;
 }
 
 export default function Chart({
@@ -57,7 +108,10 @@ export default function Chart({
   replayBarIndex,
   activeTool,
   onChartClick,
+  onDrawingClick,
   theme = "dark",
+  appearance,
+  onAppearanceChange,
   positions = [],
   currentPrice = 0,
   onBuyLimit,
@@ -67,6 +121,13 @@ export default function Chart({
   onClosePosition,
   onAddAlert,
   showBuySellButtons = true,
+  spread = 0.25,
+  indicators = [],
+  indicatorConfigs = [],
+  onEditIndicator,
+  magnetEnabled = false,
+  onChartReady,
+  children,
 }: ChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -74,8 +135,11 @@ export default function Chart({
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const onChartClickRef = useRef(onChartClick);
+  const onDrawingClickRef = useRef(onDrawingClick);
+  const magnetEnabledRef = useRef(magnetEnabled);
   const candlesRef = useRef(candles);
   const priceLinesRef = useRef<IPriceLine[]>([]);
+  const indicatorSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
   const [crosshairData, setCrosshairData] = useState<{
     time: string;
     open: number;
@@ -88,17 +152,21 @@ export default function Chart({
   } | null>(null);
   const [replayLineX, setReplayLineX] = useState<number | null>(null);
 
+  // ─── Scissors drag state (refs to avoid re-renders during drag) ───
+  const isDraggingScissorsRef = useRef(false);
+  const activeToolRef = useRef(activeTool);
+
   // ─── Context menu state ───
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
     visible: false, x: 0, y: 0, price: 0,
   });
 
-  // ─── Buy/Sell buttons Y position (tracks current price on chart) ───
-  const [buySellY, setBuySellY] = useState<number | null>(null);
-
   // ─── Alert lines ───
   const [alertLines, setAlertLines] = useState<{ price: number; id: string }[]>([]);
   const alertPriceLinesRef = useRef<IPriceLine[]>([]);
+
+  // ─── Chart Settings Modal ───
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
 
   // Keep refs up to date
   useEffect(() => {
@@ -106,12 +174,36 @@ export default function Chart({
   }, [onChartClick]);
 
   useEffect(() => {
+    onDrawingClickRef.current = onDrawingClick;
+  }, [onDrawingClick]);
+
+  useEffect(() => {
+    magnetEnabledRef.current = magnetEnabled;
+  }, [magnetEnabled]);
+
+  useEffect(() => {
+    activeToolRef.current = activeTool;
+  }, [activeTool]);
+
+  // Live-update crosshair mode when magnet toggles (without recreating chart)
+  useEffect(() => {
+    if (!chartRef.current) return;
+    chartRef.current.applyOptions({
+      crosshair: {
+        mode: magnetEnabled ? CrosshairMode.MagnetOHLC : CrosshairMode.Normal,
+      },
+    });
+  }, [magnetEnabled]);
+
+  useEffect(() => {
     candlesRef.current = candles;
   }, [candles]);
 
   // Close context menu on outside click or scroll
   useEffect(() => {
-    const handleClose = () => setContextMenu(prev => ({ ...prev, visible: false }));
+    const handleClose = () => {
+      setContextMenu(prev => ({ ...prev, visible: false }));
+    };
     if (contextMenu.visible) {
       window.addEventListener("click", handleClose);
       window.addEventListener("scroll", handleClose, true);
@@ -127,19 +219,22 @@ export default function Chart({
     if (!containerRef.current) return;
 
     const isLight = theme === "light";
+    const defaultAppearance = isLight ? DEFAULT_LIGHT_APPEARANCE : DEFAULT_DARK_APPEARANCE;
+    const app = appearance || defaultAppearance;
 
     const chart = createChart(containerRef.current, {
       layout: {
-        background: { type: ColorType.Solid, color: isLight ? "#ffffff" : "transparent" },
+        background: { type: ColorType.Solid, color: app.backgroundColor },
         textColor: isLight ? "rgba(0,0,0,0.4)" : "rgba(236,227,213,0.35)",
         fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
         fontSize: 10,
       },
       grid: {
-        vertLines: { color: isLight ? "rgba(0,0,0,0.06)" : "rgba(236,227,213,0.03)" },
-        horzLines: { color: isLight ? "rgba(0,0,0,0.06)" : "rgba(236,227,213,0.03)" },
+        vertLines: { color: app.gridColor },
+        horzLines: { color: app.gridColor },
       },
       crosshair: {
+        mode: magnetEnabled ? CrosshairMode.MagnetOHLC : CrosshairMode.Normal,
         vertLine: {
           color: isLight ? "rgba(0,0,0,0.3)" : "rgba(196,123,58,0.4)",
           width: 1, style: 2,
@@ -162,25 +257,36 @@ export default function Chart({
         secondsVisible: false,
         rightOffset: 8,
         minBarSpacing: 3,
+        tickMarkFormatter: (time: UTCTimestamp) => {
+          const d = new Date(time * 1000);
+          const h = d.getHours();
+          const m = d.getMinutes();
+          if (h === 0 && m === 0) {
+            return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          }
+          return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+        },
+      },
+      localization: {
+        timeFormatter: (time: UTCTimestamp) => {
+          const d = new Date(time * 1000);
+          return d.toLocaleString("en-US", {
+            month: "short", day: "numeric", year: "numeric",
+            hour: "numeric", minute: "2-digit", hour12: true,
+          });
+        },
       },
       handleScroll: true,
       handleScale: true,
     });
 
-    const candleSeries = chart.addSeries(CandlestickSeries, isLight ? {
-      upColor: "#26a65b",
-      downColor: "#131722",
-      borderUpColor: "#131722",
-      borderDownColor: "#131722",
-      wickUpColor: "#131722",
-      wickDownColor: "#131722",
-    } : {
-      upColor: "#22c55e",
-      downColor: "#ef4444",
-      borderUpColor: "#22c55e",
-      borderDownColor: "#ef4444",
-      wickUpColor: "rgba(34,197,94,0.6)",
-      wickDownColor: "rgba(239,68,68,0.6)",
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: app.upColor,
+      downColor: app.downColor,
+      borderUpColor: app.borderUpColor,
+      borderDownColor: app.borderDownColor,
+      wickUpColor: app.upWickColor,
+      wickDownColor: app.downWickColor,
     });
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -216,15 +322,62 @@ export default function Chart({
       }
     });
 
-    // Click handler for select-bar mode
+    // Click handler for select-bar mode and drawing tools
     chart.subscribeClick((param) => {
-      if (!onChartClickRef.current || !param.time) return;
+      if (!param.time) return;
       const clickedTime = param.time as number;
       const candleData = param.seriesData?.get(candleSeries);
       if (candleData && "close" in candleData) {
-        const idx = candlesRef.current.findIndex(c => c.time === clickedTime);
-        if (idx >= 0) {
-          onChartClickRef.current(idx, candleData.close);
+        // Drawing tool click
+        if (onDrawingClickRef.current) {
+          let price: number | null;
+          if (magnetEnabledRef.current && "open" in candleData) {
+            // Magnet ON: snap to nearest OHLC value of the clicked candle
+            const cursorY = param.sourceEvent
+              ? param.sourceEvent.clientY - chart.chartElement().getBoundingClientRect().top
+              : null;
+            if (cursorY !== null) {
+              const ohlc = [
+                (candleData as { open: number }).open,
+                (candleData as { high: number }).high,
+                (candleData as { low: number }).low,
+                (candleData as { close: number }).close,
+              ];
+              // Find the OHLC value whose pixel Y is closest to cursor
+              let bestPrice = candleData.close as number;
+              let bestDist = Infinity;
+              for (const p of ohlc) {
+                const py = candleSeries.priceToCoordinate(p);
+                if (py !== null) {
+                  const dist = Math.abs(py - cursorY);
+                  if (dist < bestDist) {
+                    bestDist = dist;
+                    bestPrice = p;
+                  }
+                }
+              }
+              price = bestPrice;
+            } else {
+              price = candleData.close as number;
+            }
+          } else {
+            // Magnet OFF: free-form price from exact cursor position
+            price = param.sourceEvent
+              ? candleSeries.coordinateToPrice(
+                  param.sourceEvent.clientY -
+                    chart.chartElement().getBoundingClientRect().top
+                )
+              : candleData.close as number;
+          }
+          onDrawingClickRef.current(clickedTime, price ?? (candleData.close as number));
+          return; // Don't also trigger bar selection
+        }
+        // Bar selection click (only fires when no drawing tool is active)
+        if (onChartClickRef.current) {
+          const idx = candlesRef.current.findIndex(c => c.time === clickedTime);
+          if (idx >= 0) {
+            onChartClickRef.current(idx, candleData.close);
+          }
         }
       }
     });
@@ -251,6 +404,9 @@ export default function Chart({
     seriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
 
+    // Expose chart/series refs to parent for DrawingOverlay
+    onChartReady?.(chart, candleSeries);
+
     const handleResize = () => {
       if (containerRef.current) {
         chart.applyOptions({
@@ -273,8 +429,10 @@ export default function Chart({
       markersRef.current = null;
       priceLinesRef.current = [];
       alertPriceLinesRef.current = [];
+      indicatorSeriesRef.current = [];
     };
-  }, [theme]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme, appearance]);
 
   // Update candle data
   useEffect(() => {
@@ -442,36 +600,74 @@ export default function Chart({
     }
   }, [alertLines]);
 
-  // ─── Update buy/sell button Y position based on current price ───
+  // ─── Indicator overlay lines ───
   useEffect(() => {
-    if (!seriesRef.current || currentPrice <= 0) {
-      setBuySellY(null);
-      return;
-    }
+    if (!chartRef.current) return;
+    const chart = chartRef.current;
 
-    const updateY = () => {
-      if (!seriesRef.current) return;
-      try {
-        const y = seriesRef.current.priceToCoordinate(currentPrice);
-        setBuySellY(y !== null ? y : null);
-      } catch {
-        setBuySellY(null);
+    // Remove old indicator series
+    for (const s of indicatorSeriesRef.current) {
+      try { chart.removeSeries(s); } catch { /* already removed */ }
+    }
+    indicatorSeriesRef.current = [];
+
+    if (!indicators || indicators.length === 0) return;
+
+    for (const ind of indicators) {
+      for (const line of ind.lines) {
+        if (line.data.length === 0) continue;
+
+        const isHistogram = ind.type === "macd" && line.key === "histogram";
+
+        if (isHistogram) {
+          const histSeries = chart.addSeries(HistogramSeries, {
+            color: line.color,
+            priceScaleId: ind.id,
+            priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+            lastValueVisible: false,
+            priceLineVisible: false,
+          });
+          chart.priceScale(ind.id).applyOptions({
+            scaleMargins: { top: 0.82, bottom: 0 },
+            autoScale: true,
+          });
+          histSeries.setData(
+            line.data.map((d) => ({
+              time: d.time as UTCTimestamp,
+              value: d.value,
+              color: d.value >= 0 ? "rgba(38,166,154,0.5)" : "rgba(239,83,80,0.5)",
+            }))
+          );
+          indicatorSeriesRef.current.push(histSeries as unknown as ISeriesApi<"Line">);
+        } else {
+          const lineSeries = chart.addSeries(LineSeries, {
+            color: line.color,
+            lineWidth: line.key === "upper" || line.key === "lower" ? 1 : 2,
+            lineStyle: line.key === "upper" || line.key === "lower" ? LineStyle.Dashed : LineStyle.Solid,
+            priceScaleId: ind.overlay ? "right" : ind.id,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            crosshairMarkerVisible: false,
+          });
+
+          if (!ind.overlay) {
+            chart.priceScale(ind.id).applyOptions({
+              scaleMargins: { top: 0.82, bottom: 0 },
+              autoScale: true,
+            });
+          }
+
+          lineSeries.setData(
+            line.data.map((d) => ({
+              time: d.time as UTCTimestamp,
+              value: d.value,
+            }))
+          );
+          indicatorSeriesRef.current.push(lineSeries);
+        }
       }
-    };
-
-    updateY();
-
-    // Update on crosshair move (effectively on every frame during interaction)
-    if (chartRef.current) {
-      const chart = chartRef.current;
-      chart.timeScale().subscribeVisibleLogicalRangeChange(updateY);
-      return () => {
-        try {
-          chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateY);
-        } catch { /* chart may be disposed */ }
-      };
     }
-  }, [currentPrice, candles, theme]);
+  }, [indicators]);
 
   // Update replay line position
   const updateReplayLinePosition = useCallback(() => {
@@ -516,6 +712,46 @@ export default function Chart({
       } catch { /* chart may be disposed */ }
     };
   }, [updateReplayLinePosition]);
+
+  // ─── Scissors drag handlers ───
+  const handleScissorsDragMove = useCallback((clientX: number) => {
+    if (!chartRef.current || !containerRef.current || !onChartClickRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const localX = clientX - rect.left;
+    try {
+      const logicalIndex = chartRef.current.timeScale().coordinateToLogical(localX);
+      if (logicalIndex === null) return;
+      const barIndex = Math.round(logicalIndex);
+      const displayCandles = visibleBars ? candles.slice(0, visibleBars) : candles;
+      const clampedIndex = Math.max(0, Math.min(barIndex, displayCandles.length - 1));
+      onChartClickRef.current(clampedIndex, 0);
+    } catch {
+      // chart may not be ready
+    }
+  }, [candles, visibleBars]);
+
+  const handleScissorsMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    isDraggingScissorsRef.current = true;
+  }, []);
+
+  // Global mousemove/mouseup listeners for scissors drag
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingScissorsRef.current) return;
+      handleScissorsDragMove(e.clientX);
+    };
+    const handleMouseUp = () => {
+      isDraggingScissorsRef.current = false;
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [handleScissorsDragMove]);
 
   // ─── Context menu action handlers ───
   const handleCopyPrice = useCallback(() => {
@@ -623,6 +859,41 @@ export default function Chart({
         </motion.div>
       )}
 
+      {/* Indicator legend (double-click to edit) */}
+      {indicatorConfigs.length > 0 && (
+        <div
+          className="absolute top-2 right-3 z-10 flex flex-wrap items-center gap-1.5 max-w-[40%] justify-end"
+          style={{ pointerEvents: "auto" }}
+        >
+          {indicatorConfigs.filter((c) => c.visible).map((config) => {
+            const def = INDICATOR_DEFS.find((d) => d.type === config.type);
+            if (!def) return null;
+            return (
+              <div
+                key={config.id}
+                onDoubleClick={() => onEditIndicator?.(config)}
+                title="Double-click to edit"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  background: isLightMode ? "rgba(0,0,0,0.06)" : "rgba(107,99,88,0.3)",
+                  fontSize: 9,
+                  fontWeight: 600,
+                  color: isLightMode ? "rgba(0,0,0,0.6)" : "rgba(236,227,213,0.7)",
+                  fontFamily: "var(--font-mono)",
+                  cursor: onEditIndicator ? "pointer" : "default",
+                }}
+              >
+                {def.shortName}({Object.values(config.params).join(",") || "-"})
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Watermark */}
       <div
         className="absolute inset-0 flex items-center justify-center pointer-events-none select-none z-0"
@@ -632,6 +903,22 @@ export default function Chart({
           <span style={{ color: isLightMode ? "#c47b3a" : "var(--accent)" }}>α</span>Findr
         </span>
       </div>
+
+      {/* Semi-transparent future region overlay (right of scissors line) */}
+      {replayLineX !== null && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: replayLineX,
+            right: 0,
+            bottom: 0,
+            background: "rgba(59,130,246,0.05)",
+            pointerEvents: "none",
+            zIndex: 5,
+          }}
+        />
+      )}
 
       {/* Blue Replay Line (scissors line) */}
       {replayLineX !== null && (
@@ -687,47 +974,122 @@ export default function Chart({
           >
             REPLAY
           </div>
+
+          {/* Draggable hit area (visible only in selectbar mode) */}
+          {activeTool === "selectbar" && (
+            <div
+              onMouseDown={handleScissorsMouseDown}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: -8,
+                width: 16,
+                height: "100%",
+                cursor: "col-resize",
+                pointerEvents: "auto",
+                zIndex: 25,
+                // Debug: uncomment to see the hit area
+                // background: "rgba(255,0,0,0.1)",
+              }}
+            />
+          )}
         </div>
       )}
 
-      {/* ─── Buy/Sell Buttons on Right Edge ─── */}
-      {showBuySellButtons && buySellY !== null && currentPrice > 0 && onBuyMarket && onSellMarket && (
+      {/* ─── Buy/Sell Buttons (TradingView-style, fixed top-left) ─── */}
+      {showBuySellButtons && currentPrice > 0 && onBuyMarket && onSellMarket && (
         <div
-          className="absolute z-30 pointer-events-auto"
-          style={{
-            right: 65,
-            top: buySellY - 12,
-          }}
+          className="absolute z-10 pointer-events-auto flex items-center gap-0"
+          style={{ top: 28, left: 12 }}
         >
-          <div className="flex flex-col gap-px">
-            <button
-              onClick={() => onBuyMarket(currentPrice)}
-              className="text-[9px] font-bold px-2 py-0.5 rounded-sm transition-all hover:brightness-110"
-              style={{
-                background: "#22c55e",
-                color: "white",
-                border: "none",
-                cursor: "pointer",
-                lineHeight: "12px",
-                letterSpacing: "0.05em",
-              }}
-            >
-              BUY
-            </button>
-            <button
-              onClick={() => onSellMarket(currentPrice)}
-              className="text-[9px] font-bold px-2 py-0.5 rounded-sm transition-all hover:brightness-110"
-              style={{
-                background: "#ef4444",
-                color: "white",
-                border: "none",
-                cursor: "pointer",
-                lineHeight: "12px",
-                letterSpacing: "0.05em",
-              }}
-            >
+          {/* Sell button */}
+          <button
+            onClick={() => onSellMarket(currentPrice - spread / 2)}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              background: isLightMode ? "#dc2626" : "#ef4444",
+              color: "white",
+              border: "none",
+              cursor: "pointer",
+              padding: "3px 10px",
+              borderRadius: "4px 0 0 4px",
+              lineHeight: 1,
+              minWidth: 72,
+            }}
+          >
+            <span style={{ fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)", tabularNums: true } as React.CSSProperties}>
+              {(currentPrice - spread / 2).toFixed(1)}
+            </span>
+            <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.06em", opacity: 0.85, marginTop: 1 }}>
               SELL
-            </button>
+            </span>
+          </button>
+
+          {/* Spread */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "0 5px",
+              height: 32,
+              background: isLightMode ? "rgba(0,0,0,0.06)" : "rgba(236,227,213,0.06)",
+              fontSize: 9,
+              fontFamily: "var(--font-mono)",
+              color: isLightMode ? "rgba(0,0,0,0.4)" : "rgba(236,227,213,0.35)",
+              fontWeight: 500,
+              minWidth: 24,
+            }}
+          >
+            {spread.toFixed(1)}
+          </div>
+
+          {/* Buy button */}
+          <button
+            onClick={() => onBuyMarket(currentPrice + spread / 2)}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              background: isLightMode ? "#2563eb" : "#3b82f6",
+              color: "white",
+              border: "none",
+              cursor: "pointer",
+              padding: "3px 10px",
+              borderRadius: "0 4px 4px 0",
+              lineHeight: 1,
+              minWidth: 72,
+            }}
+          >
+            <span style={{ fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)", tabularNums: true } as React.CSSProperties}>
+              {(currentPrice + spread / 2).toFixed(1)}
+            </span>
+            <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.06em", opacity: 0.85, marginTop: 1 }}>
+              BUY
+            </span>
+          </button>
+
+          {/* Info icon */}
+          <div
+            style={{
+              marginLeft: 4,
+              width: 14,
+              height: 14,
+              borderRadius: "50%",
+              border: `1px solid ${isLightMode ? "rgba(0,0,0,0.15)" : "rgba(236,227,213,0.15)"}`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 8,
+              fontWeight: 700,
+              color: isLightMode ? "rgba(0,0,0,0.3)" : "rgba(236,227,213,0.3)",
+              cursor: "help",
+            }}
+            title="Paper trading — simulated orders only"
+          >
+            i
           </div>
         </div>
       )}
@@ -802,8 +1164,8 @@ export default function Chart({
             transition={{ duration: 0.1 }}
             className="fixed z-[9999]"
             style={{
-              left: contextMenu.x,
-              top: contextMenu.y,
+              left: Math.min(contextMenu.x, window.innerWidth - 240),
+              top: Math.min(contextMenu.y, window.innerHeight - 100),
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -816,6 +1178,8 @@ export default function Chart({
                   ? "0 8px 30px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.08)"
                   : "0 8px 30px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3)",
                 minWidth: 220,
+                maxHeight: "calc(100vh - 40px)",
+                overflowY: "auto" as const,
                 padding: "4px 0",
                 backdropFilter: "blur(20px)",
               }}
@@ -854,7 +1218,27 @@ export default function Chart({
                 />
               )}
 
-              {(onBuyLimit || onSellLimit) && (
+              {/* Market orders at right-click price */}
+              {onBuyMarket && (
+                <ContextMenuItem
+                  icon={<span style={{ color: "#22c55e", fontWeight: 700, fontSize: 10 }}>M▲</span>}
+                  label="Buy Market"
+                  onClick={() => { onBuyMarket(contextMenu.price); setContextMenu(prev => ({ ...prev, visible: false })); }}
+                  isLight={isLightMode}
+                  accentColor="#22c55e"
+                />
+              )}
+              {onSellMarket && (
+                <ContextMenuItem
+                  icon={<span style={{ color: "#ef4444", fontWeight: 700, fontSize: 10 }}>M▼</span>}
+                  label="Sell Market"
+                  onClick={() => { onSellMarket(contextMenu.price); setContextMenu(prev => ({ ...prev, visible: false })); }}
+                  isLight={isLightMode}
+                  accentColor="#ef4444"
+                />
+              )}
+
+              {(onBuyLimit || onSellLimit || onBuyMarket || onSellMarket) && (
                 <div style={{ height: 1, background: isLightMode ? "rgba(0,0,0,0.06)" : "rgba(236,227,213,0.06)", margin: "2px 0" }} />
               )}
 
@@ -900,6 +1284,25 @@ export default function Chart({
                 isLight={isLightMode}
               />
 
+              <ContextMenuItem
+                icon={
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={isLightMode ? "#666" : "rgba(236,227,213,0.6)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 3 21 3 21 9" />
+                    <polyline points="9 21 3 21 3 15" />
+                    <line x1="21" y1="3" x2="14" y2="10" />
+                    <line x1="3" y1="21" x2="10" y2="14" />
+                  </svg>
+                }
+                label="Fit All Data"
+                onClick={() => {
+                  if (chartRef.current) {
+                    chartRef.current.timeScale().fitContent();
+                  }
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                }}
+                isLight={isLightMode}
+              />
+
               {alertLines.length > 0 && (
                 <ContextMenuItem
                   icon={
@@ -933,8 +1336,39 @@ export default function Chart({
                   ))}
                 </>
               )}
+
+              {/* ─── Chart Settings ─── */}
+              <div style={{ height: 1, background: isLightMode ? "rgba(0,0,0,0.06)" : "rgba(236,227,213,0.06)", margin: "2px 0" }} />
+              <ContextMenuItem
+                icon={
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={isLightMode ? "#666" : "rgba(236,227,213,0.6)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                  </svg>
+                }
+                label="Chart Settings..."
+                onClick={() => {
+                  setContextMenu(prev => ({ ...prev, visible: false }));
+                  setShowSettingsModal(true);
+                }}
+                isLight={isLightMode}
+              />
             </div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ─── Chart Settings Modal ─── */}
+      <AnimatePresence>
+        {showSettingsModal && (
+          <ChartSettingsModal
+            isLight={isLightMode}
+            appearance={appearance || (isLightMode ? DEFAULT_LIGHT_APPEARANCE : DEFAULT_DARK_APPEARANCE)}
+            onAppearanceChange={(app) => onAppearanceChange?.(app)}
+            symbol={symbol}
+            interval={interval}
+            onClose={() => setShowSettingsModal(false)}
+          />
         )}
       </AnimatePresence>
 
@@ -944,6 +1378,9 @@ export default function Chart({
         className="w-full h-full"
         style={{ minHeight: "300px", cursor: chartCursor }}
       />
+
+      {/* Drawing overlay slot (rendered by parent) */}
+      {children}
     </div>
   );
 }
@@ -996,6 +1433,495 @@ function ContextMenuItem({
           {shortcut}
         </span>
       )}
+    </button>
+  );
+}
+
+// ─── Settings Tab IDs ───
+type SettingsTab = "symbol" | "canvas" | "scales" | "trading";
+
+const SETTINGS_TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
+  {
+    id: "symbol",
+    label: "Symbol",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+      </svg>
+    ),
+  },
+  {
+    id: "canvas",
+    label: "Canvas",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M12 19l7-7 3 3-7 7-3-3z" /><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" /><path d="M2 2l7.586 7.586" /><circle cx="11" cy="11" r="2" />
+      </svg>
+    ),
+  },
+  {
+    id: "scales",
+    label: "Scales & Lines",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" />
+      </svg>
+    ),
+  },
+  {
+    id: "trading",
+    label: "Trading",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" /><polyline points="16 7 22 7 22 13" />
+      </svg>
+    ),
+  },
+];
+
+// ─── Chart Settings Modal (TradingView-style) ───
+function ChartSettingsModal({
+  isLight,
+  appearance,
+  onAppearanceChange,
+  symbol,
+  interval,
+  onClose,
+}: {
+  isLight: boolean;
+  appearance: ChartAppearance;
+  onAppearanceChange: (app: ChartAppearance) => void;
+  symbol?: string;
+  interval?: string;
+  onClose: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState<SettingsTab>("symbol");
+  const [localAppearance, setLocalAppearance] = useState<ChartAppearance>(appearance);
+
+  const update = (key: keyof ChartAppearance, value: string) => {
+    setLocalAppearance(prev => ({ ...prev, [key]: value }));
+  };
+
+  const handleOk = () => {
+    onAppearanceChange(localAppearance);
+    onClose();
+  };
+
+  const handleCancel = () => {
+    onClose();
+  };
+
+  const bg = isLight ? "#ffffff" : "#1e1e22";
+  const sidebarBg = isLight ? "#f5f5f5" : "#18181c";
+  const border = isLight ? "rgba(0,0,0,0.1)" : "rgba(236,227,213,0.1)";
+  const textPrimary = isLight ? "#333" : "rgba(236,227,213,0.9)";
+  const textSecondary = isLight ? "rgba(0,0,0,0.5)" : "rgba(236,227,213,0.5)";
+  const sectionLabel = isLight ? "rgba(0,0,0,0.4)" : "rgba(236,227,213,0.4)";
+  const hoverBg = isLight ? "rgba(0,0,0,0.04)" : "rgba(236,227,213,0.06)";
+  const activeBg = isLight ? "rgba(42,130,228,0.1)" : "rgba(196,123,58,0.15)";
+  const activeColor = isLight ? "#2a82e4" : "#c47b3a";
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.15 }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 20000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "rgba(0,0,0,0.5)",
+        backdropFilter: "blur(4px)",
+      }}
+      onClick={handleCancel}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 10 }}
+        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 680,
+          maxWidth: "90vw",
+          maxHeight: "80vh",
+          background: bg,
+          borderRadius: 12,
+          border: `1px solid ${border}`,
+          boxShadow: "0 24px 80px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.2)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
+      >
+        {/* Header */}
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "14px 20px",
+          borderBottom: `1px solid ${border}`,
+          flexShrink: 0,
+        }}>
+          <span style={{ fontSize: 15, fontWeight: 600, color: textPrimary, letterSpacing: "-0.01em" }}>Settings</span>
+          <button
+            onClick={handleCancel}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: 4,
+              borderRadius: 6,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: textSecondary,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = hoverBg; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "none"; }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Body: sidebar + content */}
+        <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
+          {/* Sidebar */}
+          <div style={{
+            width: 180,
+            flexShrink: 0,
+            background: sidebarBg,
+            borderRight: `1px solid ${border}`,
+            padding: "8px 0",
+            overflowY: "auto",
+          }}>
+            {SETTINGS_TABS.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  width: "100%",
+                  padding: "10px 16px",
+                  background: activeTab === tab.id ? activeBg : "transparent",
+                  border: "none",
+                  borderLeft: activeTab === tab.id ? `3px solid ${activeColor}` : "3px solid transparent",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: activeTab === tab.id ? 600 : 400,
+                  color: activeTab === tab.id ? activeColor : textSecondary,
+                  fontFamily: "'Inter', system-ui, sans-serif",
+                  transition: "all 100ms ease",
+                  textAlign: "left",
+                }}
+                onMouseEnter={e => {
+                  if (activeTab !== tab.id) e.currentTarget.style.background = hoverBg;
+                }}
+                onMouseLeave={e => {
+                  if (activeTab !== tab.id) e.currentTarget.style.background = "transparent";
+                }}
+              >
+                <span style={{ flexShrink: 0, opacity: activeTab === tab.id ? 1 : 0.6 }}>{tab.icon}</span>
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Content */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
+            {/* ─── Symbol Tab ─── */}
+            {activeTab === "symbol" && (
+              <div>
+                <SectionHeading label="SYMBOL" color={sectionLabel} />
+                <SettingsRow label="Symbol" isLight={isLight}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: textPrimary, fontFamily: "var(--font-mono)" }}>
+                    {symbol || "NQ=F"}
+                  </span>
+                </SettingsRow>
+                <SettingsRow label="Interval" isLight={isLight}>
+                  <span style={{ fontSize: 13, fontWeight: 500, color: textPrimary, fontFamily: "var(--font-mono)" }}>
+                    {interval || "1d"}
+                  </span>
+                </SettingsRow>
+
+                <SectionHeading label="DATA" color={sectionLabel} />
+                <SettingsRow label="Precision" isLight={isLight}>
+                  <span style={{ fontSize: 12, color: textSecondary }}>Default</span>
+                </SettingsRow>
+                <SettingsRow label="Timezone" isLight={isLight}>
+                  <span style={{ fontSize: 12, color: textSecondary }}>
+                    {Intl.DateTimeFormat().resolvedOptions().timeZone}
+                  </span>
+                </SettingsRow>
+              </div>
+            )}
+
+            {/* ─── Canvas Tab ─── */}
+            {activeTab === "canvas" && (
+              <div>
+                <SectionHeading label="CANVAS" color={sectionLabel} />
+                <SettingsColorRow label="Background" value={localAppearance.backgroundColor} onChange={c => update("backgroundColor", c)} isLight={isLight} />
+                <SettingsColorRow label="Grid Lines" value={localAppearance.gridColor} onChange={c => update("gridColor", c)} isLight={isLight} />
+
+                <SectionHeading label="BULLISH CANDLE" color={sectionLabel} />
+                <SettingsColorRow label="Body" value={localAppearance.upColor} onChange={c => update("upColor", c)} isLight={isLight} />
+                <SettingsColorRow label="Border" value={localAppearance.borderUpColor} onChange={c => update("borderUpColor", c)} isLight={isLight} />
+                <SettingsColorRow label="Wick" value={localAppearance.upWickColor} onChange={c => update("upWickColor", c)} isLight={isLight} />
+
+                <SectionHeading label="BEARISH CANDLE" color={sectionLabel} />
+                <SettingsColorRow label="Body" value={localAppearance.downColor} onChange={c => update("downColor", c)} isLight={isLight} />
+                <SettingsColorRow label="Border" value={localAppearance.borderDownColor} onChange={c => update("borderDownColor", c)} isLight={isLight} />
+                <SettingsColorRow label="Wick" value={localAppearance.downWickColor} onChange={c => update("downWickColor", c)} isLight={isLight} />
+
+                <div style={{ marginTop: 16 }}>
+                  <button
+                    onClick={() => setLocalAppearance(isLight ? DEFAULT_LIGHT_APPEARANCE : DEFAULT_DARK_APPEARANCE)}
+                    style={{
+                      padding: "6px 14px",
+                      fontSize: 12,
+                      fontWeight: 500,
+                      color: textSecondary,
+                      background: hoverBg,
+                      border: `1px solid ${border}`,
+                      borderRadius: 6,
+                      cursor: "pointer",
+                      fontFamily: "'Inter', system-ui, sans-serif",
+                    }}
+                  >
+                    Reset to Default
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ─── Scales & Lines Tab ─── */}
+            {activeTab === "scales" && (
+              <div>
+                <SectionHeading label="PRICE SCALE" color={sectionLabel} />
+                <SettingsRow label="Scale position" isLight={isLight}>
+                  <span style={{ fontSize: 12, color: textSecondary }}>Right</span>
+                </SettingsRow>
+                <SettingsRow label="Auto scale" isLight={isLight}>
+                  <SettingsToggle checked={true} isLight={isLight} onChange={() => {}} />
+                </SettingsRow>
+
+                <SectionHeading label="CROSSHAIR" color={sectionLabel} />
+                <SettingsRow label="Show crosshair" isLight={isLight}>
+                  <SettingsToggle checked={true} isLight={isLight} onChange={() => {}} />
+                </SettingsRow>
+                <SettingsRow label="Crosshair labels" isLight={isLight}>
+                  <SettingsToggle checked={true} isLight={isLight} onChange={() => {}} />
+                </SettingsRow>
+
+                <SectionHeading label="STATUS LINE" color={sectionLabel} />
+                <SettingsRow label="Show OHLCV" isLight={isLight}>
+                  <SettingsToggle checked={true} isLight={isLight} onChange={() => {}} />
+                </SettingsRow>
+              </div>
+            )}
+
+            {/* ─── Trading Tab ─── */}
+            {activeTab === "trading" && (
+              <div>
+                <SectionHeading label="ORDER ENTRY" color={sectionLabel} />
+                <SettingsRow label="Show trade widget" isLight={isLight}>
+                  <SettingsToggle checked={true} isLight={isLight} onChange={() => {}} />
+                </SettingsRow>
+                <SettingsRow label="Show positions on chart" isLight={isLight}>
+                  <SettingsToggle checked={true} isLight={isLight} onChange={() => {}} />
+                </SettingsRow>
+
+                <SectionHeading label="DISPLAY" color={sectionLabel} />
+                <SettingsRow label="Position labels" isLight={isLight}>
+                  <SettingsToggle checked={true} isLight={isLight} onChange={() => {}} />
+                </SettingsRow>
+                <SettingsRow label="Trade markers" isLight={isLight}>
+                  <SettingsToggle checked={true} isLight={isLight} onChange={() => {}} />
+                </SettingsRow>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          gap: 8,
+          padding: "12px 20px",
+          borderTop: `1px solid ${border}`,
+          flexShrink: 0,
+        }}>
+          <button
+            onClick={handleCancel}
+            style={{
+              padding: "7px 20px",
+              fontSize: 13,
+              fontWeight: 500,
+              color: textSecondary,
+              background: "transparent",
+              border: `1px solid ${border}`,
+              borderRadius: 6,
+              cursor: "pointer",
+              fontFamily: "'Inter', system-ui, sans-serif",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = hoverBg; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleOk}
+            style={{
+              padding: "7px 24px",
+              fontSize: 13,
+              fontWeight: 600,
+              color: "#fff",
+              background: activeColor,
+              border: "none",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontFamily: "'Inter', system-ui, sans-serif",
+            }}
+          >
+            Ok
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ─── Settings Modal Sub-Components ───
+
+function SectionHeading({ label, color }: { label: string; color: string }) {
+  return (
+    <div style={{
+      fontSize: 10,
+      fontWeight: 700,
+      textTransform: "uppercase",
+      letterSpacing: "0.08em",
+      color,
+      padding: "14px 0 6px",
+    }}>
+      {label}
+    </div>
+  );
+}
+
+function SettingsRow({ label, isLight, children }: { label: string; isLight: boolean; children: React.ReactNode }) {
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      padding: "8px 0",
+      borderBottom: `1px solid ${isLight ? "rgba(0,0,0,0.04)" : "rgba(236,227,213,0.04)"}`,
+    }}>
+      <span style={{
+        fontSize: 13,
+        color: isLight ? "rgba(0,0,0,0.7)" : "rgba(236,227,213,0.7)",
+        fontFamily: "'Inter', system-ui, sans-serif",
+      }}>
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function SettingsColorRow({ label, value, onChange, isLight }: {
+  label: string;
+  value: string;
+  onChange: (color: string) => void;
+  isLight: boolean;
+}) {
+  const displayValue = value.startsWith("rgba") || value === "transparent" ? (isLight ? "#ffffff" : "#1a1714") : value;
+  return (
+    <SettingsRow label={label} isLight={isLight}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 6,
+            border: `1px solid ${isLight ? "rgba(0,0,0,0.15)" : "rgba(236,227,213,0.15)"}`,
+            background: displayValue,
+            position: "relative",
+            overflow: "hidden",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            type="color"
+            value={displayValue}
+            onChange={e => onChange(e.target.value)}
+            onClick={e => e.stopPropagation()}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              height: "100%",
+              opacity: 0,
+              cursor: "pointer",
+              border: "none",
+              padding: 0,
+            }}
+          />
+        </div>
+        <span style={{
+          fontSize: 10,
+          fontFamily: "var(--font-mono), monospace",
+          color: isLight ? "rgba(0,0,0,0.4)" : "rgba(236,227,213,0.4)",
+          minWidth: 58,
+          textTransform: "uppercase",
+        }}>
+          {displayValue}
+        </span>
+      </div>
+    </SettingsRow>
+  );
+}
+
+function SettingsToggle({ checked, isLight, onChange }: { checked: boolean; isLight: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      style={{
+        width: 36,
+        height: 20,
+        borderRadius: 10,
+        background: checked
+          ? (isLight ? "#2a82e4" : "#c47b3a")
+          : (isLight ? "rgba(0,0,0,0.15)" : "rgba(236,227,213,0.15)"),
+        border: "none",
+        cursor: "pointer",
+        position: "relative",
+        transition: "background 150ms ease",
+        flexShrink: 0,
+      }}
+    >
+      <div style={{
+        width: 16,
+        height: 16,
+        borderRadius: 8,
+        background: "#fff",
+        position: "absolute",
+        top: 2,
+        left: checked ? 18 : 2,
+        transition: "left 150ms ease",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+      }} />
     </button>
   );
 }

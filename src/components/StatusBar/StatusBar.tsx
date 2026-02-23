@@ -8,9 +8,15 @@ interface StatusBarProps {
   interval: string;
   candleCount: number;
   isConnected?: boolean;
+  brokerName?: string;
+  brokerConnected?: boolean;
+  onOpenBrokerPanel?: () => void;
 }
 
-export default function StatusBar({ symbol, interval, candleCount, isConnected = true }: StatusBarProps) {
+export default function StatusBar({
+  symbol, interval, candleCount, isConnected = true,
+  brokerName = "Paper Trading", brokerConnected = false, onOpenBrokerPanel,
+}: StatusBarProps) {
   const [time, setTime] = useState("");
   const [latency, setLatency] = useState(3);
 
@@ -66,6 +72,42 @@ export default function StatusBar({ symbol, interval, candleCount, isConnected =
 
       {/* Spacer */}
       <div className="flex-1" />
+
+      {/* Broker toggle button */}
+      {onOpenBrokerPanel && (
+        <button
+          onClick={onOpenBrokerPanel}
+          className="flex items-center gap-1.5"
+          style={{
+            background: "none",
+            border: "none",
+            padding: "1px 6px",
+            borderRadius: 4,
+            cursor: "pointer",
+            color: brokerConnected ? "var(--buy)" : "var(--text-muted)",
+            fontSize: 10,
+            fontFamily: "var(--font-mono)",
+            transition: "background 100ms ease",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(236,227,213,0.06)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
+        >
+          <div
+            className="w-1.5 h-1.5 rounded-full"
+            style={{
+              background: brokerConnected ? "var(--buy)" : "var(--text-disabled)",
+              boxShadow: brokerConnected ? "0 0 4px rgba(34,197,94,0.4)" : "none",
+            }}
+          />
+          <span>{brokerName}</span>
+          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <polyline points="6 15 12 9 18 15" />
+          </svg>
+        </button>
+      )}
+
+      {/* Divider */}
+      {onOpenBrokerPanel && <div className="w-px h-3" style={{ background: "var(--divider)" }} />}
 
       {/* Data provider badge */}
       <span style={{ color: "var(--text-disabled)" }}>

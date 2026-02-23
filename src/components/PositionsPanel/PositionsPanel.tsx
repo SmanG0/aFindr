@@ -8,9 +8,21 @@ import type {
   Position,
   Order,
   ClosedTrade,
+  BacktestMetrics,
+  Trade,
+  MonteCarloResult,
+  WalkForwardResult,
+  TradeAnalysisResult,
 } from "@/lib/types";
+import OverviewTab from "@/components/StrategyTester/OverviewTab";
+import MonteCarloTab from "@/components/StrategyTester/MonteCarloTab";
+import WalkForwardTab from "@/components/StrategyTester/WalkForwardTab";
+import AnalysisTab from "@/components/StrategyTester/AnalysisTab";
+import StrategiesTab from "@/components/StrategyTester/StrategiesTab";
 
 type Tab = "positions" | "orders" | "history" | "balance";
+type PanelContext = "trading" | "strategy-tester";
+type StrategyTab = "overview" | "trades" | "montecarlo" | "walkforward" | "analysis" | "strategies";
 
 interface PositionsPanelProps {
   accountState: AccountState;
@@ -27,6 +39,18 @@ interface PositionsPanelProps {
   selectMode?: "date" | "random" | "bar" | null;
   onSelectModeChange?: (mode: "date" | "random" | "bar" | null) => void;
   onRandomDate?: () => void;
+
+  // Strategy Tester props
+  backtestMetrics?: BacktestMetrics | null;
+  backtestTrades?: Trade[];
+  equityCurve?: { time: number; value: number }[];
+  strategyName?: string;
+  monteCarloResult?: MonteCarloResult | null;
+  walkForwardResult?: WalkForwardResult | null;
+  tradeAnalysisResult?: TradeAnalysisResult | null;
+  showStrategyTester?: boolean;
+  onToggleStrategyTester?: () => void;
+  onLoadStrategy?: (data: Record<string, unknown>) => void;
 }
 
 const SPEED_OPTIONS = [0.25, 0.5, 1, 2, 5, 10];
@@ -194,8 +218,28 @@ export default function PositionsPanel({
   selectMode,
   onSelectModeChange,
   onRandomDate,
+  backtestMetrics,
+  backtestTrades,
+  equityCurve,
+  strategyName,
+  monteCarloResult,
+  walkForwardResult,
+  tradeAnalysisResult,
+  showStrategyTester,
+  onToggleStrategyTester,
+  onLoadStrategy,
 }: PositionsPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>("positions");
+  const [panelContext, setPanelContext] = useState<PanelContext>(
+    showStrategyTester ? "strategy-tester" : "trading"
+  );
+  const [strategyTab, setStrategyTab] = useState<StrategyTab>("overview");
+
+  // Sync panelContext when showStrategyTester changes externally
+  useEffect(() => {
+    if (showStrategyTester) setPanelContext("strategy-tester");
+  }, [showStrategyTester]);
+
   const [showSpeedDropdown, setShowSpeedDropdown] = useState(false);
   const [showSelectDropdown, setShowSelectDropdown] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
@@ -287,14 +331,17 @@ export default function PositionsPanel({
           flexShrink: 0,
         }}
       >
-        {/* Left side: Tabs */}
+        {/* Left side: Trading Tabs */}
         <div className="flex items-center" style={{ gap: 4 }}>
           {tabs.map((tab) => {
-            const isActive = activeTab === tab.id;
+            const isActive = panelContext === "trading" && activeTab === tab.id;
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => {
+                  setPanelContext("trading");
+                  setActiveTab(tab.id);
+                }}
                 className="text-xs"
                 style={{
                   padding: "4px 12px",
@@ -337,6 +384,33 @@ export default function PositionsPanel({
             flexShrink: 0,
           }}
         />
+
+        {/* Strategy Tester context tab */}
+        <button
+          onClick={() => {
+            setPanelContext(panelContext === "strategy-tester" ? "trading" : "strategy-tester");
+            onToggleStrategyTester?.();
+          }}
+          className="text-xs"
+          style={{
+            padding: "4px 12px",
+            borderRadius: 4,
+            background: panelContext === "strategy-tester" ? "rgba(236,227,213,0.08)" : "transparent",
+            color: panelContext === "strategy-tester" ? "var(--text-primary)" : "var(--text-muted)",
+            border: "none",
+            cursor: "pointer",
+            fontFamily: "var(--font-mono)",
+            transition: "all 100ms ease",
+            whiteSpace: "nowrap",
+          }}
+          onMouseEnter={(e) => { if (panelContext !== "strategy-tester") e.currentTarget.style.color = "var(--text-secondary)"; }}
+          onMouseLeave={(e) => { if (panelContext !== "strategy-tester") e.currentTarget.style.color = "var(--text-muted)"; }}
+        >
+          Strategy Tester
+        </button>
+
+        {/* Second divider before playback */}
+        <div style={{ width: 1, height: 20, background: "rgba(236,227,213,0.1)", marginLeft: 8, marginRight: 8, flexShrink: 0 }} />
 
         {/* Playback controls */}
         <div
@@ -697,29 +771,72 @@ export default function PositionsPanel({
         </button>
       </div>
 
+      {/* ─── Strategy Tester Sub-Tabs ─── */}
+      {panelContext === "strategy-tester" && (
+        <div
+          className="flex items-center"
+          style={{
+            height: 28,
+            padding: "0 12px",
+            gap: 4,
+            background: "rgba(236,227,213,0.02)",
+            borderBottom: "1px solid var(--divider)",
+            flexShrink: 0,
+          }}
+        >
+          {([
+            { id: "overview" as const, label: "Overview" },
+            { id: "trades" as const, label: `Trades${backtestTrades?.length ? ` (${backtestTrades.length})` : ""}` },
+            { id: "montecarlo" as const, label: "Monte Carlo" },
+            { id: "walkforward" as const, label: "Walk-Forward" },
+            { id: "analysis" as const, label: "Analysis" },
+            { id: "strategies" as const, label: "Strategies" },
+          ]).map((tab) => {
+            const isActive = strategyTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setStrategyTab(tab.id)}
+                className="text-xs"
+                style={{
+                  padding: "3px 10px",
+                  borderRadius: 4,
+                  background: isActive ? "rgba(236,227,213,0.08)" : "transparent",
+                  color: isActive ? "var(--text-primary)" : "var(--text-muted)",
+                  border: "none",
+                  cursor: "pointer",
+                  fontFamily: "var(--font-mono)",
+                  transition: "all 100ms ease",
+                  fontSize: 11,
+                }}
+                onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.color = "var(--text-secondary)"; }}
+                onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.color = "var(--text-muted)"; }}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* ─── Tab Content ─── */}
       <div style={{ flex: 1, overflow: "auto" }}>
-        {/* Positions Tab */}
-        {activeTab === "positions" && (
-          <PositionsTab
-            positions={accountState.positions}
-            onClosePosition={onClosePosition}
-          />
-        )}
-
-        {/* Orders Tab */}
-        {activeTab === "orders" && (
-          <OrdersTab orders={accountState.orders} />
-        )}
-
-        {/* History Tab */}
-        {activeTab === "history" && (
-          <HistoryTab trades={accountState.tradeHistory} />
-        )}
-
-        {/* Balance Tab */}
-        {activeTab === "balance" && (
-          <BalanceTab accountState={accountState} />
+        {panelContext === "trading" ? (
+          <>
+            {activeTab === "positions" && <PositionsTab positions={accountState.positions} onClosePosition={onClosePosition} />}
+            {activeTab === "orders" && <OrdersTab orders={accountState.orders} />}
+            {activeTab === "history" && <HistoryTab trades={accountState.tradeHistory} />}
+            {activeTab === "balance" && <BalanceTab accountState={accountState} />}
+          </>
+        ) : (
+          <>
+            {strategyTab === "overview" && <OverviewTab metrics={backtestMetrics ?? null} equityCurve={equityCurve ?? []} strategyName={strategyName ?? ""} />}
+            {strategyTab === "trades" && <TradesTab trades={backtestTrades ?? []} />}
+            {strategyTab === "montecarlo" && <MonteCarloTab result={monteCarloResult ?? null} />}
+            {strategyTab === "walkforward" && <WalkForwardTab result={walkForwardResult ?? null} />}
+            {strategyTab === "analysis" && <AnalysisTab result={tradeAnalysisResult ?? null} />}
+            {strategyTab === "strategies" && <StrategiesTab onLoadStrategy={onLoadStrategy ?? (() => {})} />}
+          </>
         )}
       </div>
     </div>
@@ -1105,5 +1222,59 @@ function BalanceTab({ accountState }: { accountState: AccountState }) {
         </span>
       </div>
     </div>
+  );
+}
+
+// ─── Backtest Trades Tab ───
+function TradesTab({ trades }: { trades: Trade[] }) {
+  if (trades.length === 0) {
+    return (
+      <div className="flex items-center justify-center" style={{ height: "100%", color: "var(--text-muted)", fontSize: 12, fontFamily: "var(--font-mono)" }}>
+        No backtest trades
+      </div>
+    );
+  }
+
+  return (
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Instrument</th>
+          <th>Side</th>
+          <th style={{ textAlign: "right" }}>Size</th>
+          <th style={{ textAlign: "right" }}>Entry</th>
+          <th style={{ textAlign: "right" }}>Exit</th>
+          <th style={{ textAlign: "right" }}>P&L (pts)</th>
+          <th style={{ textAlign: "right" }}>P&L ($)</th>
+          <th style={{ textAlign: "right" }}>Commission</th>
+        </tr>
+      </thead>
+      <tbody>
+        {trades.map((trade) => (
+          <tr key={trade.id}>
+            <td className="tabular-nums" style={{ color: "var(--text-muted)" }}>{trade.id}</td>
+            <td style={{ color: "var(--text-primary)", fontWeight: 500 }}>{trade.instrument}</td>
+            <td>
+              <span className={trade.side === "long" ? "chip chip-buy" : "chip chip-sell"}>
+                {trade.side === "long" ? "LONG" : "SHORT"}
+              </span>
+            </td>
+            <td className="tabular-nums" style={{ textAlign: "right" }}>{trade.size}</td>
+            <td className="tabular-nums" style={{ textAlign: "right" }}>{trade.entryPrice.toFixed(2)}</td>
+            <td className="tabular-nums" style={{ textAlign: "right" }}>{trade.exitPrice.toFixed(2)}</td>
+            <td className="tabular-nums" style={{ textAlign: "right", color: trade.pnlPoints >= 0 ? "var(--buy)" : "var(--sell)" }}>
+              {trade.pnlPoints >= 0 ? "+" : ""}{trade.pnlPoints.toFixed(2)}
+            </td>
+            <td className="tabular-nums font-semibold" style={{ textAlign: "right", color: trade.pnl >= 0 ? "var(--buy)" : "var(--sell)" }}>
+              {trade.pnl >= 0 ? "+$" : "-$"}{Math.abs(trade.pnl).toFixed(2)}
+            </td>
+            <td className="tabular-nums" style={{ textAlign: "right", color: "var(--text-muted)" }}>
+              ${trade.commission.toFixed(2)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

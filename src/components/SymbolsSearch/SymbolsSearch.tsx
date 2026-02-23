@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { CONTRACTS, type AccountState } from "@/lib/types";
+import { SYMBOL_LIBRARY, SYMBOL_CATEGORIES, type SymbolCategory } from "@/lib/symbols";
+import type { AccountState } from "@/lib/types";
 
 interface SymbolsSearchProps {
   isOpen: boolean;
@@ -12,8 +13,6 @@ interface SymbolsSearchProps {
   accountState: AccountState;
 }
 
-type CategoryTab = "all" | "futures";
-
 export default function SymbolsSearch({
   isOpen,
   onClose,
@@ -21,10 +20,22 @@ export default function SymbolsSearch({
   currentSymbol,
 }: SymbolsSearchProps) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeTab, setActiveTab] = useState<CategoryTab>("all");
+  const [activeTab, setActiveTab] = useState<SymbolCategory>("all");
   const [showFavorites, setShowFavorites] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("afindr_symbol_favorites");
+    if (saved) {
+      try { setFavorites(JSON.parse(saved)); } catch { /* ignore */ }
+    }
+  }, []);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Persist favorites
+  useEffect(() => {
+    localStorage.setItem("afindr_symbol_favorites", JSON.stringify(favorites));
+  }, [favorites]);
 
   // Focus search input when modal opens
   useEffect(() => {
@@ -48,32 +59,42 @@ export default function SymbolsSearch({
 
   const toggleFavorite = (symbol: string) => {
     setFavorites((prev) =>
-      prev.includes(symbol)
-        ? prev.filter((s) => s !== symbol)
-        : [...prev, symbol]
+      prev.includes(symbol) ? prev.filter((s) => s !== symbol) : [...prev, symbol]
     );
   };
 
-  const allSymbols = Object.values(CONTRACTS);
-
-  const filteredSymbols = allSymbols.filter((contract) => {
-    // Search filter
+  const filteredSymbols = useMemo(() => {
     const query = searchQuery.toLowerCase();
-    const matchesSearch =
-      !query ||
-      contract.symbol.toLowerCase().includes(query) ||
-      contract.name.toLowerCase().includes(query);
-
-    // Favorites filter
-    const matchesFavorites = !showFavorites || favorites.includes(contract.symbol);
-
-    // Tab filter (all contracts are futures for now, so "all" and "futures" show the same)
-    return matchesSearch && matchesFavorites;
-  });
+    return SYMBOL_LIBRARY.filter((entry) => {
+      const matchesSearch =
+        !query ||
+        entry.symbol.toLowerCase().includes(query) ||
+        entry.name.toLowerCase().includes(query);
+      const matchesCategory = activeTab === "all" || entry.category === activeTab;
+      const matchesFavorites = !showFavorites || favorites.includes(entry.symbol);
+      return matchesSearch && matchesCategory && matchesFavorites;
+    });
+  }, [searchQuery, activeTab, showFavorites, favorites]);
 
   const handleSelect = (symbol: string) => {
     onSelectSymbol(symbol);
     onClose();
+  };
+
+  // Category badge colors
+  const categoryColor: Record<string, string> = {
+    stocks: "rgba(59,130,246,0.15)",
+    crypto: "rgba(168,85,247,0.15)",
+    futures: "rgba(234,179,8,0.15)",
+    etfs: "rgba(34,197,94,0.15)",
+    forex: "rgba(236,72,153,0.15)",
+  };
+  const categoryTextColor: Record<string, string> = {
+    stocks: "rgb(96,165,250)",
+    crypto: "rgb(192,132,252)",
+    futures: "rgb(250,204,21)",
+    etfs: "rgb(74,222,128)",
+    forex: "rgb(244,114,182)",
   };
 
   return (
@@ -95,7 +116,7 @@ export default function SymbolsSearch({
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
             style={{
-              width: 600,
+              width: 640,
               maxHeight: "82vh",
               borderRadius: 18,
               background: "rgba(10, 10, 10, 0.95)",
@@ -117,16 +138,9 @@ export default function SymbolsSearch({
                 borderBottom: "0.667px solid rgba(236,227,213,0.1)",
               }}
             >
-              {/* Magnifying glass icon */}
               <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="rgba(236,227,213,0.28)"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+                width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="rgba(236,227,213,0.28)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
                 style={{ flexShrink: 0 }}
               >
                 <circle cx="11" cy="11" r="8" />
@@ -137,7 +151,7 @@ export default function SymbolsSearch({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search symbols..."
+                placeholder="Search symbols... (AAPL, BTC, NQ=F)"
                 style={{
                   flex: 1,
                   background: "transparent",
@@ -147,30 +161,16 @@ export default function SymbolsSearch({
                   color: "white",
                 }}
               />
-              {/* Close button */}
+              <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", flexShrink: 0 }}>
+                {filteredSymbols.length} results
+              </span>
               <button
                 onClick={onClose}
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 28,
-                  height: 28,
-                  borderRadius: 6,
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--text-muted)",
-                  cursor: "pointer",
-                  transition: "all 100ms ease",
-                  flexShrink: 0,
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "rgba(236,227,213,0.06)";
-                  e.currentTarget.style.color = "var(--text-primary)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "transparent";
-                  e.currentTarget.style.color = "var(--text-muted)";
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 28, height: 28, borderRadius: 6,
+                  background: "transparent", border: "none",
+                  color: "var(--text-muted)", cursor: "pointer", flexShrink: 0,
                 }}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -185,89 +185,45 @@ export default function SymbolsSearch({
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 6,
-                padding: "10px 16px",
+                gap: 4,
+                padding: "8px 16px",
                 borderBottom: "0.667px solid rgba(236,227,213,0.06)",
+                overflowX: "auto",
               }}
             >
-              {(["all", "futures"] as const).map((tab) => {
-                const isActive = activeTab === tab && !showFavorites;
+              {SYMBOL_CATEGORIES.map((cat) => {
+                const isActive = activeTab === cat.id && !showFavorites;
                 return (
                   <button
-                    key={tab}
-                    onClick={() => {
-                      setActiveTab(tab);
-                      setShowFavorites(false);
-                    }}
+                    key={cat.id}
+                    onClick={() => { setActiveTab(cat.id); setShowFavorites(false); }}
                     style={{
-                      fontSize: 12,
-                      padding: "6px 12px",
-                      borderRadius: 6,
+                      fontSize: 11, padding: "5px 12px", borderRadius: 6,
                       background: isActive ? "rgba(236,227,213,0.08)" : "transparent",
                       color: isActive ? "white" : "var(--text-muted)",
-                      border: "none",
-                      cursor: "pointer",
-                      fontWeight: 500,
-                      transition: "all 100ms ease",
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!isActive) {
-                        e.currentTarget.style.background = "rgba(236,227,213,0.04)";
-                        e.currentTarget.style.color = "var(--text-secondary)";
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isActive) {
-                        e.currentTarget.style.background = "transparent";
-                        e.currentTarget.style.color = "var(--text-muted)";
-                      }
+                      border: "none", cursor: "pointer", fontWeight: 500,
+                      whiteSpace: "nowrap", transition: "all 100ms ease",
                     }}
                   >
-                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    {cat.label}
                   </button>
                 );
               })}
+
+              <div style={{ width: 1, height: 16, background: "rgba(236,227,213,0.08)", flexShrink: 0 }} />
 
               {/* Favorites toggle */}
               <button
                 onClick={() => setShowFavorites(!showFavorites)}
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  fontSize: 12,
-                  padding: "6px 12px",
-                  borderRadius: 6,
+                  display: "flex", alignItems: "center", gap: 4,
+                  fontSize: 11, padding: "5px 12px", borderRadius: 6,
                   background: showFavorites ? "rgba(236,227,213,0.08)" : "transparent",
                   color: showFavorites ? "white" : "var(--text-muted)",
-                  border: "none",
-                  cursor: "pointer",
-                  fontWeight: 500,
-                  transition: "all 100ms ease",
-                }}
-                onMouseEnter={(e) => {
-                  if (!showFavorites) {
-                    e.currentTarget.style.background = "rgba(236,227,213,0.04)";
-                    e.currentTarget.style.color = "var(--text-secondary)";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!showFavorites) {
-                    e.currentTarget.style.background = "transparent";
-                    e.currentTarget.style.color = "var(--text-muted)";
-                  }
+                  border: "none", cursor: "pointer", fontWeight: 500,
                 }}
               >
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill={showFavorites ? "#f59e0b" : "none"}
-                  stroke={showFavorites ? "#f59e0b" : "currentColor"}
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill={showFavorites ? "#f59e0b" : "none"} stroke={showFavorites ? "#f59e0b" : "currentColor"} strokeWidth="2">
                   <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
                 </svg>
                 Favorites
@@ -275,149 +231,67 @@ export default function SymbolsSearch({
             </div>
 
             {/* ─── Symbol List ─── */}
-            <div
-              style={{
-                overflowY: "auto",
-                maxHeight: 400,
-              }}
-            >
+            <div style={{ overflowY: "auto", maxHeight: 440 }}>
               {filteredSymbols.length === 0 ? (
-                <div
-                  style={{
-                    padding: "40px 16px",
-                    textAlign: "center",
-                    color: "var(--text-muted)",
-                    fontSize: 13,
-                  }}
-                >
-                  {showFavorites
-                    ? "No favorite symbols yet"
-                    : "No symbols match your search"}
+                <div style={{ padding: "40px 16px", textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+                  {showFavorites ? "No favorite symbols yet" : "No symbols match your search"}
                 </div>
               ) : (
-                filteredSymbols.map((contract) => {
-                  const isCurrent = contract.symbol === currentSymbol;
-                  const isFav = favorites.includes(contract.symbol);
+                filteredSymbols.map((entry) => {
+                  const isCurrent = entry.symbol === currentSymbol;
+                  const isFav = favorites.includes(entry.symbol);
 
                   return (
                     <div
-                      key={contract.symbol}
+                      key={entry.symbol}
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        padding: "10px 16px",
-                        gap: 12,
-                        transition: "background 100ms ease",
-                        borderLeft: isCurrent
-                          ? "2px solid var(--accent)"
-                          : "2px solid transparent",
-                        background: isCurrent
-                          ? "rgba(236,227,213,0.04)"
-                          : "transparent",
-                        cursor: "default",
+                        display: "flex", alignItems: "center",
+                        padding: "8px 16px", gap: 10,
+                        borderLeft: isCurrent ? "2px solid var(--accent)" : "2px solid transparent",
+                        background: isCurrent ? "rgba(236,227,213,0.04)" : "transparent",
+                        cursor: "pointer", transition: "background 80ms ease",
                       }}
+                      onClick={() => handleSelect(entry.symbol)}
                       onMouseEnter={(e) => {
-                        e.currentTarget.style.background = isCurrent
-                          ? "rgba(236,227,213,0.05)"
-                          : "rgba(236,227,213,0.04)";
+                        e.currentTarget.style.background = isCurrent ? "rgba(236,227,213,0.05)" : "rgba(236,227,213,0.03)";
                       }}
                       onMouseLeave={(e) => {
-                        e.currentTarget.style.background = isCurrent
-                          ? "rgba(236,227,213,0.04)"
-                          : "transparent";
+                        e.currentTarget.style.background = isCurrent ? "rgba(236,227,213,0.04)" : "transparent";
                       }}
                     >
                       {/* Favorite star */}
                       <button
-                        onClick={() => toggleFavorite(contract.symbol)}
+                        onClick={(e) => { e.stopPropagation(); toggleFavorite(entry.symbol); }}
                         style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          background: "transparent",
-                          border: "none",
-                          cursor: "pointer",
-                          padding: 2,
-                          flexShrink: 0,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          background: "transparent", border: "none", cursor: "pointer", padding: 2, flexShrink: 0,
                         }}
                       >
-                        <svg
-                          width="14"
-                          height="14"
-                          viewBox="0 0 24 24"
-                          fill={isFav ? "#f59e0b" : "none"}
-                          stroke={isFav ? "#f59e0b" : "rgba(236,227,213,0.2)"}
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          style={{
-                            transition: "all 150ms ease",
-                          }}
-                        >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill={isFav ? "#f59e0b" : "none"} stroke={isFav ? "#f59e0b" : "rgba(236,227,213,0.2)"} strokeWidth="2" style={{ transition: "all 150ms ease" }}>
                           <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
                         </svg>
                       </button>
 
                       {/* Symbol */}
-                      <span
-                        style={{
-                          fontWeight: 600,
-                          fontSize: 13,
-                          color: "white",
-                          minWidth: 60,
-                        }}
-                      >
-                        {contract.symbol}
+                      <span style={{ fontWeight: 600, fontSize: 13, color: "white", minWidth: 80, fontFamily: "var(--font-mono)" }}>
+                        {entry.symbol}
                       </span>
 
                       {/* Description */}
-                      <span
-                        style={{
-                          fontSize: 12,
-                          color: "var(--text-muted)",
-                        }}
-                      >
-                        {contract.name}
+                      <span style={{ fontSize: 12, color: "var(--text-muted)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {entry.name}
                       </span>
 
-                      {/* Spacer */}
-                      <div style={{ flex: 1 }} />
-
-                      {/* Point value */}
-                      <span
-                        style={{
-                          fontSize: 12,
-                          color: "var(--text-muted)",
-                          fontFamily: "var(--font-mono)",
-                          marginRight: 12,
-                        }}
-                      >
-                        ${contract.pointValue}/pt
+                      {/* Category badge */}
+                      <span style={{
+                        fontSize: 9, fontWeight: 600, fontFamily: "var(--font-mono)",
+                        padding: "2px 8px", borderRadius: 100, textTransform: "uppercase",
+                        background: categoryColor[entry.category] || "rgba(236,227,213,0.08)",
+                        color: categoryTextColor[entry.category] || "var(--text-muted)",
+                        flexShrink: 0,
+                      }}>
+                        {entry.category}
                       </span>
-
-                      {/* Launch Chart button */}
-                      <button
-                        onClick={() => handleSelect(contract.symbol)}
-                        style={{
-                          fontSize: 12,
-                          color: "var(--link)",
-                          background: "transparent",
-                          border: "none",
-                          cursor: "pointer",
-                          padding: "4px 0",
-                          fontWeight: 500,
-                          whiteSpace: "nowrap",
-                          transition: "all 100ms ease",
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.textDecoration = "underline";
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.textDecoration = "none";
-                        }}
-                      >
-                        Launch Chart
-                      </button>
                     </div>
                   );
                 })

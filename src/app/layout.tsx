@@ -16,7 +16,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: "αFindr",
-  description: "AI-powered futures trading backtester",
+  description: "AI-powered trading platform",
 };
 
 export default function RootLayout({

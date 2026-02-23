@@ -1,0 +1,84 @@
+"use client";
+
+import { useState, useCallback } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import type { AccountState } from "@/lib/types";
+import PortfolioDashboard from "./PortfolioDashboard";
+import WatchlistSidebar from "./WatchlistSidebar";
+import StockDetailView from "./StockDetailView";
+import OrderPanel from "./OrderPanel";
+
+interface PortfolioPageProps {
+  accountState: AccountState;
+  currentPrice: number;
+  onNavigateToChart?: (ticker: string) => void;
+}
+
+export default function PortfolioPage({ accountState, currentPrice, onNavigateToChart }: PortfolioPageProps) {
+  const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
+
+  // Track detail data for the order panel
+  const [detailPrice, setDetailPrice] = useState(0);
+  const [detailName, setDetailName] = useState("");
+
+  const handleSelectTicker = useCallback((ticker: string) => {
+    setSelectedTicker(ticker);
+    // Reset detail info - will be updated when StockDetailView loads
+    setDetailPrice(0);
+    setDetailName(ticker);
+  }, []);
+
+  const handleBack = useCallback(() => {
+    setSelectedTicker(null);
+  }, []);
+
+  return (
+    <div className="flex-1 flex overflow-hidden" style={{ background: "var(--bg)" }}>
+      <AnimatePresence mode="wait">
+        {selectedTicker === null ? (
+          /* ─── Dashboard View: Main Content + Watchlist Sidebar ─── */
+          <motion.div
+            key="dashboard"
+            className="flex flex-1 overflow-hidden"
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            transition={{ duration: 0.2, ease: [0.25, 1, 0.5, 1] }}
+          >
+            <PortfolioDashboard
+              accountState={accountState}
+              onSelectTicker={handleSelectTicker}
+            />
+            <WatchlistSidebar
+              positions={accountState.positions}
+              onSelectTicker={handleSelectTicker}
+            />
+          </motion.div>
+        ) : (
+          /* ─── Stock Detail View: Detail Content + Order Panel ─── */
+          <motion.div
+            key={`detail-${selectedTicker}`}
+            className="flex flex-1 overflow-hidden"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 20 }}
+            transition={{ duration: 0.2, ease: [0.25, 1, 0.5, 1] }}
+          >
+            <StockDetailView
+              ticker={selectedTicker}
+              onBack={handleBack}
+              onSelectTicker={handleSelectTicker}
+              onNavigateToChart={onNavigateToChart}
+            />
+            <OrderPanel
+              ticker={selectedTicker}
+              name={detailName}
+              price={detailPrice || currentPrice}
+              balance={accountState.balance}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

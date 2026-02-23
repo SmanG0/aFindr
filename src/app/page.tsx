@@ -24,8 +24,8 @@ import RiskManagement from "@/components/RiskManagement/RiskManagement";
 import SettingsPage from "@/components/SettingsPage/SettingsPage";
 import NewsPage from "@/components/NewsPage/NewsPage";
 import StatusBar from "@/components/StatusBar/StatusBar";
-import BrokerPanel from "@/components/BrokerPanel/BrokerPanel";
-import TradingPanel from "@/components/TradingPanel/TradingPanel";
+import BrokerStrip from "@/components/BrokerPanel/BrokerPanel";
+// TradingPanel removed — backtest results now shown in Strategy Tester bottom panel
 import type { AppPage } from "@/components/PageNav/PageNav";
 import DashboardPage from "@/components/DashboardPage/DashboardPage";
 import PortfolioPage from "@/components/PortfolioPage/PortfolioPage";
@@ -126,11 +126,8 @@ export default function Home() {
   const [metrics, setMetrics] = useState<BacktestMetrics | null>(null);
   const [equityCurve, setEquityCurve] = useState<{ time: number; value: number }[]>([]);
   const [strategyName, setStrategyName] = useState<string>("");
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [monteCarloResult, setMonteCarloResult] = useState<MonteCarloResult | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [walkForwardResult, setWalkForwardResult] = useState<WalkForwardResult | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [tradeAnalysisResult, setTradeAnalysisResult] = useState<TradeAnalysisResult | null>(null);
 
   // Chat / AI Copilot state
@@ -1137,17 +1134,7 @@ export default function Home() {
                     </div>
                   </Chart>
 
-                  {showStrategyTester && trades.length > 0 && (
-                    <div className="absolute right-0 top-0 bottom-0 z-20 w-[420px] border-l" style={{ borderColor: "var(--divider)", background: "var(--bg-raised)" }}>
-                      <div className="flex items-center justify-between h-8 px-3 flex-shrink-0" style={{ borderBottom: "1px solid var(--divider)" }}>
-                        <span className="text-[11px] font-medium" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>BACKTEST RESULTS</span>
-                        <button onClick={() => setShowStrategyTester(false)} className="text-[11px] px-2 py-0.5 rounded" style={{ color: "var(--text-muted)", background: "var(--bg-surface)" }}>Close</button>
-                      </div>
-                      <div className="overflow-auto" style={{ height: "calc(100% - 32px)" }}>
-                        <TradingPanel trades={trades} metrics={metrics} equityCurve={equityCurve} strategyName={strategyName} />
-                      </div>
-                    </div>
-                  )}
+                  {/* Backtest results now shown in Strategy Tester bottom panel */}
 
                   {/* Trade widget now lives in Navbar2 */}
                 </div>
@@ -1210,9 +1197,26 @@ export default function Home() {
                 selectMode={selectMode}
                 onSelectModeChange={setSelectMode}
                 onRandomDate={handleRandomDate}
+                backtestMetrics={metrics}
+                backtestTrades={trades}
+                equityCurve={equityCurve}
+                strategyName={strategyName}
+                monteCarloResult={monteCarloResult}
+                walkForwardResult={walkForwardResult}
+                tradeAnalysisResult={tradeAnalysisResult}
+                showStrategyTester={showStrategyTester}
+                onToggleStrategyTester={() => setShowStrategyTester(prev => !prev)}
               />
             </div>
           )}
+
+          {/* Inline Broker Strip */}
+          <BrokerStrip
+            isExpanded={showBrokerPanel}
+            onToggle={() => setShowBrokerPanel(prev => !prev)}
+            activeBrokerId={activeBrokerId}
+            onSelectBroker={(id) => setActiveBrokerId(id)}
+          />
 
           <StatusBar
             symbol={symbol}
@@ -1321,14 +1325,7 @@ export default function Home() {
         />
       )}
 
-      {/* Broker panel */}
-      <BrokerPanel
-        isOpen={showBrokerPanel}
-        onClose={() => setShowBrokerPanel(false)}
-        activeBrokerId={activeBrokerId}
-        onSelectBroker={(id) => setActiveBrokerId(id)}
-        theme={chartTheme}
-      />
+      {/* Broker panel — removed, now inline in trade page */}
 
     </div>
   );

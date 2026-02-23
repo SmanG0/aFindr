@@ -1,6 +1,6 @@
 "use client";
 import { useState, useRef, useCallback, useEffect } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface FloatingTradeWidgetProps {
   currentPrice: number;
@@ -27,9 +27,9 @@ export default function FloatingTradeWidget({
   const [isVisible, setIsVisible] = useState(visible);
   const [position, setPosition] = useState({ x: 20, y: 20 });
   const [isDragging, setIsDragging] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const dragOffset = useRef({ x: 0, y: 0 });
 
-  // Sync internal visibility with parent prop
   useEffect(() => {
     setIsVisible(visible);
   }, [visible]);
@@ -39,7 +39,6 @@ export default function FloatingTradeWidget({
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      // Don't start drag if clicking on a button
       if ((e.target as HTMLElement).closest("button")) return;
       setIsDragging(true);
       dragOffset.current = {
@@ -85,112 +84,100 @@ export default function FloatingTradeWidget({
         userSelect: "none",
       }}
       onMouseDown={handleMouseDown}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
-      {!isVisible ? (
-        <button
-          onClick={() => setIsVisible(true)}
-          style={{
-            background: "var(--bg-overlay)",
-            border: "none",
-            borderRadius: 20,
-            padding: "6px 8px",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <svg
-            width={14}
-            height={14}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="rgba(255,255,255,0.6)"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-            <circle cx={12} cy={12} r={3} />
-          </svg>
-        </button>
-      ) : (
-        <div className="trade-widget">
-          {/* Eye toggle */}
-          <button
-            onClick={() => setIsVisible(false)}
+      <AnimatePresence>
+        {!isVisible ? (
+          <motion.button
+            key="collapsed"
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            onClick={() => setIsVisible(true)}
             style={{
-              background: "none",
-              border: "none",
+              background: "rgba(15,12,8,0.85)",
+              border: "0.667px solid rgba(236,227,213,0.12)",
+              borderRadius: 10,
+              padding: "6px 10px",
               cursor: "pointer",
-              padding: 2,
               display: "flex",
               alignItems: "center",
+              gap: 6,
+              backdropFilter: "blur(16px)",
             }}
           >
-            <svg
-              width={14}
-              height={14}
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="rgba(255,255,255,0.6)"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
+            <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth={2}>
               <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
               <circle cx={12} cy={12} r={3} />
             </svg>
-          </button>
-
-          {/* Bid (Sell) button */}
-          <button
-            className="bid-btn"
-            onClick={() => onSell(bidPrice)}
+            <span style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", fontFamily: "var(--font-mono)" }}>Trade</span>
+          </motion.button>
+        ) : (
+          <motion.div
+            key="expanded"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className="trade-widget"
+            style={{ position: "relative" }}
           >
-            {formatPrice(bidPrice, symbol)}
-          </button>
+            {/* Bid (Sell) button */}
+            <button className="bid-btn" onClick={() => onSell(bidPrice)}>
+              <span style={{ fontSize: 9, fontWeight: 700, opacity: 0.7, letterSpacing: "0.08em", display: "block", lineHeight: 1 }}>SELL</span>
+              <span style={{ display: "block", lineHeight: 1, marginTop: 2 }}>{formatPrice(bidPrice, symbol)}</span>
+            </button>
 
-          {/* Spread */}
-          <span
-            style={{
-              fontSize: 10,
-              color: "rgba(255,255,255,0.35)",
-              fontVariantNumeric: "tabular-nums",
-              minWidth: 20,
-              textAlign: "center",
-            }}
-          >
-            {spread.toFixed(2)}
-          </span>
+            {/* Spread */}
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 32, flexShrink: 0 }}>
+              <span style={{ fontSize: 9, color: "rgba(255,255,255,0.25)", fontVariantNumeric: "tabular-nums", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" }}>
+                {spread.toFixed(2)}
+              </span>
+              <span style={{ fontSize: 7, color: "rgba(255,255,255,0.15)", fontFamily: "var(--font-mono)", marginTop: 1, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                spread
+              </span>
+            </div>
 
-          {/* Ask (Buy) button */}
-          <button
-            className="ask-btn"
-            onClick={() => onBuy(askPrice)}
-          >
-            {formatPrice(askPrice, symbol)}
-          </button>
+            {/* Ask (Buy) button */}
+            <button className="ask-btn" onClick={() => onBuy(askPrice)}>
+              <span style={{ fontSize: 9, fontWeight: 700, opacity: 0.7, letterSpacing: "0.08em", display: "block", lineHeight: 1 }}>BUY</span>
+              <span style={{ display: "block", lineHeight: 1, marginTop: 2 }}>{formatPrice(askPrice, symbol)}</span>
+            </button>
 
-          {/* Grid / settings icon */}
-          <svg
-            width={14}
-            height={14}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="rgba(255,255,255,0.35)"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            style={{ flexShrink: 0 }}
-          >
-            <rect x={3} y={3} width={7} height={7} />
-            <rect x={14} y={3} width={7} height={7} />
-            <rect x={3} y={14} width={7} height={7} />
-            <rect x={14} y={14} width={7} height={7} />
-          </svg>
-        </div>
-      )}
+            {/* Hide button - only visible on hover */}
+            <AnimatePresence>
+              {hovered && (
+                <motion.button
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  onClick={() => setIsVisible(false)}
+                  style={{
+                    position: "absolute",
+                    top: -8,
+                    right: -8,
+                    width: 18,
+                    height: 18,
+                    borderRadius: 9,
+                    background: "rgba(15,12,8,0.95)",
+                    border: "0.667px solid rgba(236,227,213,0.2)",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 0,
+                  }}
+                >
+                  <svg width={8} height={8} viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth={3}>
+                    <line x1={6} y1={6} x2={18} y2={18} />
+                    <line x1={18} y1={6} x2={6} y2={18} />
+                  </svg>
+                </motion.button>
+              )}
+            </AnimatePresence>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
