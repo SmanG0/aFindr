@@ -52,3 +52,4 @@ backend/data/databento/*_tick_*.csv
 
 # debug logs
 firebase-debug.log
+backend/.env
