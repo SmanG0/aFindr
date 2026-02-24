@@ -6,15 +6,19 @@ import numpy as np
 
 
 def calculate_metrics(trades: List[Dict], initial_balance: float) -> dict:
+    empty = {
+        "total_trades": 0, "win_rate": 0.0, "loss_rate": 0.0,
+        "total_return": 0.0, "total_return_pct": 0.0,
+        "max_drawdown": 0.0, "max_drawdown_pct": 0.0,
+        "max_consecutive_losses": 0, "max_consecutive_wins": 0,
+        "profit_factor": 0.0, "sharpe_ratio": 0.0,
+        "avg_win": 0.0, "avg_loss": 0.0,
+        "sortino_ratio": 0.0, "calmar_ratio": 0.0,
+        "recovery_factor": 0.0, "expectancy": 0.0,
+        "expectancy_ratio": 0.0, "payoff_ratio": 0.0,
+    }
     if not trades:
-        return {
-            "total_trades": 0, "win_rate": 0.0, "loss_rate": 0.0,
-            "total_return": 0.0, "total_return_pct": 0.0,
-            "max_drawdown": 0.0, "max_drawdown_pct": 0.0,
-            "max_consecutive_losses": 0, "max_consecutive_wins": 0,
-            "profit_factor": 0.0, "sharpe_ratio": 0.0,
-            "avg_win": 0.0, "avg_loss": 0.0,
-        }
+        return empty
 
     pnls = [t["pnl"] for t in trades]
     wins = [p for p in pnls if p > 0]
@@ -53,6 +57,31 @@ def calculate_metrics(trades: List[Dict], initial_balance: float) -> dict:
     else:
         sharpe = 0.0
 
+    # Sortino ratio (penalizes downside volatility only)
+    downside_returns = np.array([p / initial_balance for p in pnls if p < 0])
+    if len(downside_returns) > 1 and np.std(downside_returns) > 0:
+        returns_mean = float(np.mean(np.array(pnls) / initial_balance))
+        sortino = round(float(returns_mean / np.std(downside_returns) * np.sqrt(252)), 2)
+    else:
+        sortino = 0.0
+
+    # Calmar ratio (annualized return / max drawdown %)
+    annualized_return_pct = (total_return / initial_balance) * (252 / max(len(trades), 1)) * 100
+    calmar = round(abs(annualized_return_pct / (max_dd_pct * 100)), 2) if max_dd_pct < 0 else 0.0
+
+    # Recovery factor (net profit / max drawdown)
+    recovery_factor = round(abs(total_return / max_dd), 2) if max_dd < 0 else 0.0
+
+    # Expectancy (avg $ per trade)
+    expectancy = round(total_return / len(trades), 2)
+
+    # Expectancy ratio (expectancy / avg loss magnitude)
+    avg_loss_abs = abs(float(np.mean(losses))) if losses else 1.0
+    expectancy_ratio = round(expectancy / avg_loss_abs, 2) if avg_loss_abs > 0 else 0.0
+
+    # Payoff ratio (avg win / avg loss magnitude)
+    payoff_ratio = round(abs(float(np.mean(wins)) / float(np.mean(losses))), 2) if losses and wins else 0.0
+
     return {
         "total_trades": len(trades),
         "win_rate": len(wins) / len(trades) if trades else 0.0,
@@ -67,4 +96,10 @@ def calculate_metrics(trades: List[Dict], initial_balance: float) -> dict:
         "sharpe_ratio": round(sharpe, 2),
         "avg_win": round(float(np.mean(wins)), 2) if wins else 0.0,
         "avg_loss": round(float(np.mean(losses)), 2) if losses else 0.0,
+        "sortino_ratio": sortino,
+        "calmar_ratio": calmar,
+        "recovery_factor": recovery_factor,
+        "expectancy": expectancy,
+        "expectancy_ratio": expectancy_ratio,
+        "payoff_ratio": payoff_ratio,
     }

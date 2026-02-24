@@ -42,6 +42,8 @@ class Backtester:
         self.trades: list[dict] = []
         self.equity_curve: list[dict] = []
         self.trade_id = 0
+        self._current_mae = 0.0  # Max Adverse Excursion (worst unrealized loss)
+        self._current_mfe = 0.0  # Max Favorable Excursion (best unrealized gain)
 
     def run(self) -> BacktestResult:
         rows = self.data.reset_index()
@@ -59,6 +61,15 @@ class Backtester:
 
             if self.position:
                 self._check_sl_tp(bar)
+
+            # Track MAE/MFE while position is open
+            if self.position:
+                if self.position.side == "long":
+                    excursion = (bar["close"] - self.position.entry_price) * self.config.point_value * self.position.size
+                else:
+                    excursion = (self.position.entry_price - bar["close"]) * self.config.point_value * self.position.size
+                self._current_mfe = max(self._current_mfe, excursion)
+                self._current_mae = min(self._current_mae, excursion)
 
             if not self.position:
                 signal = self.strategy.on_bar(bar, history)
@@ -91,6 +102,8 @@ class Backtester:
         side = "long" if signal.action == "buy" else "short"
         entry_price = bar["close"] + slippage if side == "long" else bar["close"] - slippage
         self.balance -= self.config.commission
+        self._current_mae = 0.0
+        self._current_mfe = 0.0
         self.position = Position(
             side=side, size=signal.size, entry_price=entry_price,
             entry_time=bar["time"], stop_loss=signal.stop_loss, take_profit=signal.take_profit,
@@ -116,6 +129,7 @@ class Backtester:
             "exit_time": bar["time"], "stop_loss": self.position.stop_loss,
             "take_profit": self.position.take_profit, "pnl": round(pnl, 2),
             "pnl_points": round(pnl_points, 2), "commission": self.config.commission * 2,
+            "mae": round(self._current_mae, 2), "mfe": round(self._current_mfe, 2),
         })
         self.position = None
 
@@ -147,6 +161,7 @@ class Backtester:
             "exit_time": bar["time"], "stop_loss": self.position.stop_loss,
             "take_profit": self.position.take_profit, "pnl": round(pnl, 2),
             "pnl_points": round(pnl_points, 2), "commission": self.config.commission * 2,
+            "mae": round(self._current_mae, 2), "mfe": round(self._current_mfe, 2),
         })
         self.position = None
 

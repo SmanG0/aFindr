@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 import time
 import hashlib
+import concurrent.futures
 from typing import Optional, List, Dict
 from datetime import datetime, timezone
 
@@ -239,10 +240,12 @@ def fetch_all_news(
     all_items = []
     seen_titles = set()
 
-    for feed_id in RSS_FEEDS:
-        items = fetch_feed(feed_id)
+    feed_ids = list(RSS_FEEDS.keys())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(fetch_feed, feed_ids))
+
+    for items in results:
         for item in items:
-            # Deduplicate by title similarity
             title_key = item["title"].lower()[:60]
             if title_key in seen_titles:
                 continue

@@ -17,10 +17,12 @@ app.add_middleware(
 from routers.data import router as data_router
 from routers.chat import router as chat_router
 from routers.news import router as news_router
+from routers.strategies import router as strategies_router
 
 app.include_router(data_router)
 app.include_router(chat_router)
 app.include_router(news_router)
+app.include_router(strategies_router)
 
 
 @app.get("/health")

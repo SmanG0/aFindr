@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from anthropic import Anthropic
 
 from agent.prompts import ALPHY_SYSTEM_PROMPT
-from agent.tools import TOOLS, TOOL_HANDLERS, handle_run_backtest, handle_generate_pinescript
+from agent.tools import TOOLS, TOOL_HANDLERS, handle_run_backtest, handle_generate_pinescript, handle_run_walk_forward
 from agent.strategy_agent import generate_strategy, generate_pinescript
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -68,6 +68,10 @@ async def chat(req: ChatRequest):
     # Track tool results for the frontend
     backtest_result = None
     pinescript_result = None
+    monte_carlo_result = None
+    walk_forward_result = None
+    trade_analysis_result = None
+    chart_script_result = None
     tool_data = []
 
     for _round in range(MAX_TOOL_ROUNDS):
@@ -93,6 +97,10 @@ async def chat(req: ChatRequest):
                 "strategy": backtest_result.get("strategy") if backtest_result else None,
                 "backtest_result": _format_backtest_for_frontend(backtest_result) if backtest_result else None,
                 "pinescript": pinescript_result,
+                "monte_carlo": monte_carlo_result,
+                "walk_forward": walk_forward_result,
+                "trade_analysis": trade_analysis_result,
+                "chart_script": chart_script_result,
                 "tool_data": tool_data if tool_data else None,
             }
 
@@ -104,6 +112,7 @@ async def chat(req: ChatRequest):
         for tool_block in tool_use_blocks:
             tool_name = tool_block.name
             tool_input = tool_block.input
+            result_str = json.dumps({"error": "Tool did not produce a result"})
 
             try:
                 if tool_name == "run_backtest":
@@ -111,11 +120,34 @@ async def chat(req: ChatRequest):
                     result_data = json.loads(result_str)
                     if "error" not in result_data:
                         backtest_result = result_data
+                        # Extract auto-generated Monte Carlo if present
+                        if result_data.get("monte_carlo"):
+                            monte_carlo_result = result_data["monte_carlo"]
                 elif tool_name == "generate_pinescript":
                     result_str = await handle_generate_pinescript(tool_input, generate_pinescript)
                     result_data = json.loads(result_str)
                     if "error" not in result_data:
                         pinescript_result = result_data
+                elif tool_name == "run_walk_forward":
+                    result_str = await handle_run_walk_forward(tool_input, generate_strategy)
+                    result_data = json.loads(result_str)
+                    if "error" not in result_data:
+                        walk_forward_result = result_data
+                elif tool_name == "run_monte_carlo":
+                    result_str = await TOOL_HANDLERS[tool_name](tool_input)
+                    result_data = json.loads(result_str)
+                    if "error" not in result_data:
+                        monte_carlo_result = result_data
+                elif tool_name == "analyze_trades":
+                    result_str = await TOOL_HANDLERS[tool_name](tool_input)
+                    result_data = json.loads(result_str)
+                    if "error" not in result_data:
+                        trade_analysis_result = result_data
+                elif tool_name == "create_chart_script":
+                    result_str = await TOOL_HANDLERS[tool_name](tool_input)
+                    result_data = json.loads(result_str)
+                    if "error" not in result_data:
+                        chart_script_result = result_data.get("chart_script")
                 elif tool_name in TOOL_HANDLERS:
                     result_str = await TOOL_HANDLERS[tool_name](tool_input)
                     result_data = json.loads(result_str)
@@ -146,6 +178,10 @@ async def chat(req: ChatRequest):
         "strategy": backtest_result.get("strategy") if backtest_result else None,
         "backtest_result": _format_backtest_for_frontend(backtest_result) if backtest_result else None,
         "pinescript": pinescript_result,
+        "monte_carlo": monte_carlo_result,
+        "walk_forward": walk_forward_result,
+        "trade_analysis": trade_analysis_result,
+        "chart_script": chart_script_result,
         "tool_data": tool_data if tool_data else None,
     }
 
@@ -158,10 +194,11 @@ def _format_backtest_for_frontend(result: dict) -> dict | None:
     strategy = result.get("strategy", {})
     metrics = result.get("metrics", {})
     trades = result.get("trades", [])
+    equity_curve = result.get("equity_curve", [])
 
     return {
         "trades": trades,
-        "equity_curve": [],  # Full equity curve not included in tool response
+        "equity_curve": equity_curve,
         "metrics": metrics,
         "strategy_name": strategy.get("name", ""),
         "strategy_description": strategy.get("description", ""),

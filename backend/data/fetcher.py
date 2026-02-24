@@ -70,7 +70,10 @@ def _load_symbol_data(prefix: str) -> pd.DataFrame:
 
 
 def _load_tick_data(prefix: str) -> pd.DataFrame:
-    """Load tick (trades) data for a given symbol prefix."""
+    """Load tick (trades) data for a given symbol prefix.
+
+    Returns empty DataFrame if no tick files exist (tick data is optional).
+    """
     if prefix in _tick_cache:
         return _tick_cache[prefix]
 
@@ -78,7 +81,11 @@ def _load_tick_data(prefix: str) -> pd.DataFrame:
     files = sorted(glob.glob(pattern))
 
     if not files:
-        raise ValueError(f"No tick data found for prefix '{prefix}' in {DATA_DIR}")
+        # Tick data is optional — return empty DataFrame instead of crashing
+        empty = pd.DataFrame(columns=["price", "size", "side"])
+        empty.index.name = "ts_event"
+        _tick_cache[prefix] = empty
+        return empty
 
     frames = []
     for f in files:
@@ -185,6 +192,9 @@ async def fetch_ticks(
         raise ValueError(f"No Databento data mapping for symbol '{symbol}'")
 
     raw = _load_tick_data(prefix)
+
+    if raw.empty:
+        return []
 
     if date:
         # Filter to specific date

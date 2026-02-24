@@ -13,6 +13,10 @@ from data.contracts import get_contract_config, CONTRACTS
 from data.news_fetcher import fetch_all_news
 from data.stock_fetcher import fetch_stock_quote, fetch_analyst_ratings
 from engine.backtester import Backtester, BacktestConfig
+from engine.monte_carlo import run_monte_carlo
+from engine.walk_forward import run_walk_forward
+from engine.pattern_detector import analyze_trade_patterns
+from engine.persistence import save_strategy, list_strategies, load_strategy
 from agent.sandbox import validate_strategy_code, execute_strategy_code
 
 # ─── Tool Definitions (Anthropic tool_use schema) ───
@@ -154,6 +158,222 @@ TOOLS = [
             "required": ["symbol"],
         },
     },
+    {
+        "name": "run_monte_carlo",
+        "description": "Run Monte Carlo simulation on backtest trade results. Shuffles trade order N times to estimate probability of ruin, profit probability, return distribution percentiles, max drawdown distribution, and equity fan chart data. Use after running a backtest to assess strategy robustness.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trade_pnls": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "description": "List of per-trade P&L values from a backtest",
+                },
+                "initial_balance": {
+                    "type": "number",
+                    "description": "Starting account balance",
+                    "default": 50000,
+                },
+                "num_simulations": {
+                    "type": "integer",
+                    "description": "Number of random permutations to run",
+                    "default": 1000,
+                },
+                "ruin_threshold_pct": {
+                    "type": "number",
+                    "description": "Ruin = losing this % of initial balance (e.g. 50 = 50% loss)",
+                    "default": 50,
+                },
+            },
+            "required": ["trade_pnls"],
+        },
+    },
+    {
+        "name": "run_walk_forward",
+        "description": "Run walk-forward analysis on a strategy. Splits data into sequential in-sample/out-of-sample windows, optimizes parameters on in-sample, validates on out-of-sample. Returns per-window performance and robustness ratio (OOS/IS performance).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "strategy_description": {
+                    "type": "string",
+                    "description": "Natural language description of the strategy to walk-forward test",
+                },
+                "param_grid": {
+                    "type": "object",
+                    "description": "Parameter grid for optimization, e.g. {'rsi_period': [10, 14, 20], 'stop_loss': [30, 50, 70]}",
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Futures symbol",
+                    "enum": list(CONTRACTS.keys()),
+                    "default": "NQ=F",
+                },
+                "period": {
+                    "type": "string",
+                    "description": "Historical period",
+                    "enum": ["60d", "1y", "2y"],
+                    "default": "2y",
+                },
+                "interval": {
+                    "type": "string",
+                    "description": "Candle interval",
+                    "enum": ["5m", "15m", "30m", "1h", "4h", "1d"],
+                    "default": "1d",
+                },
+                "num_windows": {
+                    "type": "integer",
+                    "description": "Number of IS/OOS windows",
+                    "default": 5,
+                },
+                "initial_balance": {
+                    "type": "number",
+                    "description": "Starting account balance",
+                    "default": 50000,
+                },
+            },
+            "required": ["strategy_description", "param_grid"],
+        },
+    },
+    {
+        "name": "analyze_trades",
+        "description": "Analyze trade patterns from a backtest — find best/worst entry hours, days, pre-entry conditions (ATR, momentum), setup quality scores, MAE/MFE analysis, and post-exit continuation. Use after running a backtest to understand what drives wins vs losses.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trades": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Trade list from a backtest result",
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol the trades were on (to fetch price data)",
+                    "enum": list(CONTRACTS.keys()),
+                    "default": "NQ=F",
+                },
+                "period": {
+                    "type": "string",
+                    "description": "Period matching the backtest data",
+                    "enum": ["60d", "1y", "2y"],
+                    "default": "1y",
+                },
+                "interval": {
+                    "type": "string",
+                    "description": "Interval matching the backtest data",
+                    "enum": ["5m", "15m", "30m", "1h", "4h", "1d"],
+                    "default": "1d",
+                },
+            },
+            "required": ["trades"],
+        },
+    },
+    {
+        "name": "list_saved_strategies",
+        "description": "List all saved strategies (newest first). Returns name, description, symbol, interval, creation date, and whether backtest/Monte Carlo results are saved.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "load_saved_strategy",
+        "description": "Load a saved strategy by filename. Returns the full strategy including code, parameters, backtest metrics, and Monte Carlo results if available.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "The strategy filename to load",
+                },
+            },
+            "required": ["filename"],
+        },
+    },
+    {
+        "name": "create_chart_script",
+        "description": "Create a custom visual overlay on the user's chart. Supports vertical lines, horizontal price lines, boxes/zones, markers, text labels, shaded regions, and computed data lines. Use this for session markers, price levels, zones, annotations, and any visual element the user requests on their chart.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Display name for this chart script, e.g. 'NY Session Lines', 'Support/Resistance Zones'",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Brief description of what this script shows",
+                },
+                "elements": {
+                    "type": "array",
+                    "description": "Static visual elements to draw on the chart",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["line", "hline", "vline", "box", "marker", "label", "shade"],
+                                "description": "Element type",
+                            },
+                            "id": {
+                                "type": "string",
+                                "description": "Unique ID for this element",
+                            },
+                            "price": {"type": "number", "description": "Price level (for hline)"},
+                            "time": {"type": "number", "description": "Unix timestamp (for vline, marker, label)"},
+                            "timeStart": {"type": "number", "description": "Start time (for box, shade)"},
+                            "timeEnd": {"type": "number", "description": "End time (for box, shade)"},
+                            "priceHigh": {"type": "number", "description": "Upper price (for box)"},
+                            "priceLow": {"type": "number", "description": "Lower price (for box)"},
+                            "color": {"type": "string", "description": "CSS color, e.g. '#ff0000', 'rgba(255,0,0,0.5)'"},
+                            "width": {"type": "number", "description": "Line width in pixels"},
+                            "style": {"type": "string", "enum": ["solid", "dashed", "dotted"], "description": "Line style"},
+                            "label": {"type": "string", "description": "Text label"},
+                            "text": {"type": "string", "description": "Display text (for label, marker)"},
+                            "position": {"type": "string", "enum": ["aboveBar", "belowBar", "inBar"], "description": "Marker position"},
+                            "shape": {"type": "string", "enum": ["arrowUp", "arrowDown", "circle", "square"], "description": "Marker shape"},
+                            "opacity": {"type": "number", "description": "Opacity 0-1 (for box, shade)"},
+                            "fontSize": {"type": "number", "description": "Font size in pixels (for label)"},
+                            "background": {"type": "string", "description": "Background color (for label)"},
+                            "data": {
+                                "type": "array",
+                                "description": "Array of {time, value} points (for line type)",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "time": {"type": "number"},
+                                        "value": {"type": "number"},
+                                    },
+                                },
+                            },
+                        },
+                        "required": ["type", "id"],
+                    },
+                },
+                "generators": {
+                    "type": "array",
+                    "description": "Dynamic generators that compute elements from candle data",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["session_vlines", "prev_day_levels"],
+                                "description": "Generator type",
+                            },
+                            "hour": {"type": "integer", "description": "Hour (0-23) for session_vlines"},
+                            "minute": {"type": "integer", "description": "Minute (0-59) for session_vlines"},
+                            "label": {"type": "string", "description": "Label text"},
+                            "color": {"type": "string", "description": "CSS color"},
+                            "width": {"type": "number", "description": "Line width"},
+                            "style": {"type": "string", "enum": ["solid", "dashed", "dotted"]},
+                        },
+                        "required": ["type"],
+                    },
+                },
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 
@@ -229,7 +449,7 @@ async def handle_run_backtest(args: dict, strategy_generator) -> str:
     """Handle run_backtest tool call.
 
     Uses a separate Claude call to generate strategy code from the description,
-    then validates, compiles, and backtests it.
+    then validates, compiles, backtests, auto-runs Monte Carlo, and auto-saves.
     """
     description = args["strategy_description"]
     symbol = args.get("symbol", "NQ=F")
@@ -269,6 +489,32 @@ async def handle_run_backtest(args: dict, strategy_generator) -> str:
     except Exception as e:
         return json.dumps({"error": f"Backtest execution failed: {str(e)}"})
 
+    # Auto-run Monte Carlo on trade results
+    monte_carlo_data = None
+    trade_pnls = [t["pnl"] for t in result.trades]
+    if trade_pnls:
+        try:
+            mc = run_monte_carlo(trade_pnls, initial_balance)
+            monte_carlo_data = mc.to_dict()
+        except Exception:
+            pass
+
+    # Auto-save strategy
+    saved_filename = None
+    try:
+        saved_filename = save_strategy(
+            name=strategy_result.get("name", "Unnamed Strategy"),
+            description=strategy_result.get("description", ""),
+            code=code,
+            parameters=strategy_result.get("parameters", {}),
+            backtest_metrics=result.metrics,
+            monte_carlo=monte_carlo_data,
+            symbol=symbol,
+            interval=interval,
+        )
+    except Exception:
+        pass
+
     return json.dumps({
         "strategy": {
             "name": strategy_result.get("name"),
@@ -278,9 +524,10 @@ async def handle_run_backtest(args: dict, strategy_generator) -> str:
         },
         "metrics": result.metrics,
         "trade_count": len(result.trades),
-        "trades": result.trades[:10],  # First 10 trades for context
-        "equity_start": result.equity_curve[0]["value"] if result.equity_curve else initial_balance,
-        "equity_end": result.equity_curve[-1]["value"] if result.equity_curve else initial_balance,
+        "trades": result.trades,
+        "equity_curve": result.equity_curve,
+        "monte_carlo": monte_carlo_data,
+        "saved_filename": saved_filename,
     })
 
 
@@ -314,6 +561,155 @@ async def handle_get_contract_info(args: dict) -> str:
     return json.dumps(config)
 
 
+async def handle_run_monte_carlo(args: dict) -> str:
+    """Handle run_monte_carlo tool call."""
+    trade_pnls = args["trade_pnls"]
+    initial_balance = args.get("initial_balance", 50000)
+    num_simulations = args.get("num_simulations", 1000)
+    ruin_threshold_pct = args.get("ruin_threshold_pct", 50)
+
+    if not trade_pnls:
+        return json.dumps({"error": "No trade PnLs provided"})
+
+    try:
+        result = run_monte_carlo(
+            trade_pnls=trade_pnls,
+            initial_balance=initial_balance,
+            num_simulations=num_simulations,
+            ruin_threshold_pct=ruin_threshold_pct,
+        )
+        return json.dumps(result.to_dict())
+    except Exception as e:
+        return json.dumps({"error": f"Monte Carlo failed: {str(e)}"})
+
+
+async def handle_run_walk_forward(args: dict, strategy_generator) -> str:
+    """Handle run_walk_forward tool call."""
+    description = args["strategy_description"]
+    param_grid = args["param_grid"]
+    symbol = args.get("symbol", "NQ=F")
+    period = args.get("period", "2y")
+    interval = args.get("interval", "1d")
+    num_windows = args.get("num_windows", 5)
+    initial_balance = args.get("initial_balance", 50000)
+
+    # Generate strategy code
+    strategy_result = strategy_generator(description, [])
+    if "error" in strategy_result:
+        return json.dumps({"error": strategy_result.get("raw_response", "Failed to generate strategy")})
+
+    code = strategy_result.get("code", "")
+    is_valid, msg = validate_strategy_code(code)
+    if not is_valid:
+        return json.dumps({"error": f"Strategy validation failed: {msg}"})
+
+    try:
+        strategy_class = execute_strategy_code(code)
+    except Exception as e:
+        return json.dumps({"error": f"Strategy compilation failed: {str(e)}"})
+
+    try:
+        df = await fetch_ohlcv(symbol, period, interval)
+        contract = get_contract_config(symbol)
+        config = BacktestConfig(
+            initial_balance=initial_balance,
+            point_value=contract["point_value"],
+            tick_size=contract["tick_size"],
+        )
+        result = run_walk_forward(
+            strategy_class=strategy_class,
+            data=df,
+            config=config,
+            param_grid=param_grid,
+            num_windows=num_windows,
+        )
+        return json.dumps(result.to_dict())
+    except Exception as e:
+        return json.dumps({"error": f"Walk-forward failed: {str(e)}"})
+
+
+async def handle_analyze_trades(args: dict) -> str:
+    """Handle analyze_trades tool call."""
+    trades = args["trades"]
+    symbol = args.get("symbol", "NQ=F")
+    period = args.get("period", "1y")
+    interval = args.get("interval", "1d")
+
+    if not trades:
+        return json.dumps({"error": "No trades provided"})
+
+    try:
+        import pandas as pd
+        df = await fetch_ohlcv(symbol, period, interval)
+        result = analyze_trade_patterns(trades, df)
+        return json.dumps(result.to_dict())
+    except Exception as e:
+        return json.dumps({"error": f"Trade analysis failed: {str(e)}"})
+
+
+async def handle_list_strategies(args: dict) -> str:
+    """Handle list_saved_strategies tool call."""
+    strategies = list_strategies()
+    return json.dumps({"strategies": strategies, "count": len(strategies)})
+
+
+async def handle_load_strategy(args: dict) -> str:
+    """Handle load_saved_strategy tool call."""
+    filename = args["filename"]
+    data = load_strategy(filename)
+    if not data:
+        return json.dumps({"error": f"Strategy not found: {filename}"})
+    return json.dumps(data)
+
+
+async def handle_create_chart_script(args: dict) -> str:
+    """Handle create_chart_script tool call.
+
+    Validates and wraps elements/generators into a ChartScript JSON object.
+    The frontend will parse this and render it on the chart.
+    """
+    import uuid
+
+    name = args.get("name", "Chart Script")
+    description = args.get("description", "")
+    elements = args.get("elements", [])
+    generators = args.get("generators", [])
+
+    script_id = f"cs_{uuid.uuid4().hex[:8]}"
+
+    # Validate and normalize elements
+    validated_elements = []
+    for el in elements:
+        el_type = el.get("type")
+        if el_type not in ("line", "hline", "vline", "box", "marker", "label", "shade"):
+            continue
+        # Ensure each element has an id
+        if not el.get("id"):
+            el["id"] = f"{script_id}_{el_type}_{len(validated_elements)}"
+        validated_elements.append(el)
+
+    # Validate generators
+    validated_generators = []
+    for gen in generators:
+        gen_type = gen.get("type")
+        if gen_type not in ("session_vlines", "prev_day_levels"):
+            continue
+        validated_generators.append(gen)
+
+    chart_script = {
+        "id": script_id,
+        "name": name,
+        "visible": True,
+        "elements": validated_elements,
+        "generators": validated_generators,
+    }
+
+    return json.dumps({
+        "chart_script": chart_script,
+        "description": description,
+    })
+
+
 # ─── Dispatcher ───
 
 TOOL_HANDLERS = {
@@ -321,5 +717,10 @@ TOOL_HANDLERS = {
     "fetch_news": handle_fetch_news,
     "get_stock_info": handle_get_stock_info,
     "get_contract_info": handle_get_contract_info,
-    # run_backtest is special — needs strategy_generator passed in
+    "run_monte_carlo": handle_run_monte_carlo,
+    "analyze_trades": handle_analyze_trades,
+    "list_saved_strategies": handle_list_strategies,
+    "load_saved_strategy": handle_load_strategy,
+    "create_chart_script": handle_create_chart_script,
+    # run_backtest, generate_pinescript, run_walk_forward are special — need strategy_generator
 }

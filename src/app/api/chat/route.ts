@@ -36,6 +36,24 @@ export async function POST(request: NextRequest) {
     }
 
     const data = await res.json();
+
+    // Map snake_case backend fields to camelCase frontend fields
+    if (data.backtest_result && !data.backtestResult) {
+      data.backtestResult = data.backtest_result;
+    }
+    if (data.chart_script && !data.chartScript) {
+      data.chartScript = data.chart_script;
+    }
+    if (data.trade_analysis && !data.tradeAnalysis) {
+      data.tradeAnalysis = data.trade_analysis;
+    }
+    if (data.walk_forward && !data.walkForward) {
+      data.walkForward = data.walk_forward;
+    }
+    if (data.monte_carlo && !data.monteCarlo) {
+      data.monteCarlo = data.monte_carlo;
+    }
+
     return NextResponse.json(data);
   } catch (err) {
     return NextResponse.json(

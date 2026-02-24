@@ -1,5 +1,6 @@
 import ast
 import re
+import threading
 
 ALLOWED_IMPORTS = {"pandas", "numpy", "ta", "pd", "np"}
 FORBIDDEN_PATTERNS = [
@@ -43,10 +44,35 @@ def validate_strategy_code(code: str) -> "tuple[bool, str]":
     return True, "OK"
 
 
-def execute_strategy_code(code: str) -> type:
-    """Execute validated strategy code and return the strategy class."""
+class StrategyExecutionTimeout(Exception):
+    pass
+
+
+def execute_strategy_code(code: str, timeout_seconds: int = 10) -> type:
+    """Execute validated strategy code and return the strategy class.
+
+    Runs exec() in a daemon thread with a timeout to prevent infinite loops.
+    """
     namespace = {}
-    exec(code, namespace)
+    error: list = [None]
+
+    def _run():
+        try:
+            exec(code, namespace)
+        except Exception as e:
+            error[0] = e
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout_seconds)
+
+    if thread.is_alive():
+        raise StrategyExecutionTimeout(
+            f"Strategy code execution timed out after {timeout_seconds}s"
+        )
+    if error[0]:
+        raise error[0]
+
     from engine.strategy import BaseStrategy
     for value in namespace.values():
         if isinstance(value, type) and issubclass(value, BaseStrategy) and value is not BaseStrategy:

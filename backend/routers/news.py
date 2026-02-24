@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Query
 
 from data.news_fetcher import fetch_all_news, get_available_sources
-from data.stock_fetcher import fetch_stock_quote, fetch_analyst_ratings, fetch_related_stocks
+from data.stock_fetcher import fetch_stock_quote, fetch_analyst_ratings, fetch_related_stocks, fetch_stock_detail_full
 
 router = APIRouter(prefix="/api/news", tags=["news"])
 
@@ -44,3 +44,12 @@ async def get_stock_detail(ticker: str):
         "ratings": ratings,
         "relatedStocks": related,
     }
+
+
+@router.get("/stock/{ticker}/full")
+async def get_stock_detail_full(ticker: str):
+    """Get comprehensive stock detail via yfinance: fundamentals, earnings, analyst data, ownership."""
+    data = fetch_stock_detail_full(ticker.upper())
+    if not data:
+        return {"error": f"Could not fetch data for {ticker}"}
+    return data
