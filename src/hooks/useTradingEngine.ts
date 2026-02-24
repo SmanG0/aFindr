@@ -7,13 +7,24 @@ import {
   ClosedTrade,
   getContractConfig,
 } from "@/lib/types";
+import { syncPosition, syncClosePosition, syncFullState } from "@/lib/api";
 
 const INITIAL_BALANCE = 25000;
-const STORAGE_KEY = "afindr_trading_state";
+const STORAGE_KEY = "afindr_trading_state_v2";
+const DEMO_VERSION = 4; // bump to force fresh demo data
+const DEMO_VERSION_KEY = "afindr_demo_version";
 
 function loadSavedState(): AccountState | null {
   if (typeof window === "undefined") return null;
   try {
+    // If demo version changed, wipe stale state
+    const ver = localStorage.getItem(DEMO_VERSION_KEY);
+    if (ver !== String(DEMO_VERSION)) {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem("afindr_trading_state"); // old key cleanup
+      localStorage.setItem(DEMO_VERSION_KEY, String(DEMO_VERSION));
+      return null;
+    }
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return null;
     const parsed = JSON.parse(saved) as AccountState;
@@ -55,29 +66,30 @@ function buildDemoState(): AccountState {
   const now = Date.now();
   const DAY = 86400000;
 
+  // Holdings purchased over the last ~60 days with staggered entry dates
   const demoPositions: Position[] = [
-    { id: "demo-pos-1", symbol: "AAPL", side: "long", size: 15, entryPrice: 178.50, entryTime: now - 5 * DAY, stopLoss: 170.00, takeProfit: 195.00, commission: 0.62, unrealizedPnl: 285.00 },
-    { id: "demo-pos-2", symbol: "NVDA", side: "long", size: 8, entryPrice: 875.30, entryTime: now - 3 * DAY, stopLoss: 840.00, takeProfit: 950.00, commission: 0.62, unrealizedPnl: 520.00 },
-    { id: "demo-pos-3", symbol: "MSFT", side: "long", size: 10, entryPrice: 412.80, entryTime: now - 7 * DAY, stopLoss: 395.00, takeProfit: 440.00, commission: 0.62, unrealizedPnl: -142.50 },
-    { id: "demo-pos-4", symbol: "GOOGL", side: "long", size: 12, entryPrice: 152.60, entryTime: now - 2 * DAY, stopLoss: 145.00, takeProfit: 165.00, commission: 0.62, unrealizedPnl: 198.00 },
-    { id: "demo-pos-5", symbol: "TSLA", side: "short", size: 5, entryPrice: 245.20, entryTime: now - 1 * DAY, stopLoss: 260.00, takeProfit: 220.00, commission: 0.62, unrealizedPnl: 87.50 },
+    { id: "demo-pos-1", symbol: "AAPL",  side: "long", size: 25, entryPrice: 225.80, entryTime: now - 52 * DAY, stopLoss: 215.00, takeProfit: 250.00, commission: 0.62, unrealizedPnl: 355.00 },
+    { id: "demo-pos-2", symbol: "NVDA",  side: "long", size: 15, entryPrice: 125.60, entryTime: now - 44 * DAY, stopLoss: 115.00, takeProfit: 160.00, commission: 0.62, unrealizedPnl: 682.50 },
+    { id: "demo-pos-3", symbol: "MSFT",  side: "long", size: 12, entryPrice: 430.20, entryTime: now - 35 * DAY, stopLoss: 410.00, takeProfit: 460.00, commission: 0.62, unrealizedPnl: -170.40 },
+    { id: "demo-pos-4", symbol: "META",  side: "long", size: 8,  entryPrice: 585.40, entryTime: now - 28 * DAY, stopLoss: 560.00, takeProfit: 650.00, commission: 0.62, unrealizedPnl: 436.80 },
+    { id: "demo-pos-5", symbol: "AMZN",  side: "long", size: 20, entryPrice: 218.30, entryTime: now - 21 * DAY, stopLoss: 205.00, takeProfit: 245.00, commission: 0.62, unrealizedPnl: 294.00 },
+    { id: "demo-pos-6", symbol: "GOOGL", side: "long", size: 18, entryPrice: 188.50, entryTime: now - 15 * DAY, stopLoss: 178.00, takeProfit: 210.00, commission: 0.62, unrealizedPnl: 198.00 },
+    { id: "demo-pos-7", symbol: "V",     side: "long", size: 10, entryPrice: 328.90, entryTime: now - 10 * DAY, stopLoss: 315.00, takeProfit: 350.00, commission: 0.62, unrealizedPnl: -89.00 },
+    { id: "demo-pos-8", symbol: "TSLA",  side: "long", size: 8,  entryPrice: 365.40, entryTime: now - 5 * DAY,  stopLoss: 340.00, takeProfit: 400.00, commission: 0.62, unrealizedPnl: 148.80 },
   ];
 
+  // Closed trades from further back (~60-90 days ago)
   const demoHistory: ClosedTrade[] = [
-    { id: "demo-t1", symbol: "AAPL", side: "long", size: 20, entryPrice: 168.30, exitPrice: 179.45, entryTime: now - 28 * DAY, exitTime: now - 25 * DAY, stopLoss: null, takeProfit: null, pnl: 222.38, pnlPoints: 11.15, commission: 1.24 },
-    { id: "demo-t2", symbol: "META", side: "long", size: 8, entryPrice: 505.10, exitPrice: 522.80, entryTime: now - 24 * DAY, exitTime: now - 22 * DAY, stopLoss: 490.00, takeProfit: null, pnl: 140.36, pnlPoints: 17.70, commission: 1.24 },
-    { id: "demo-t3", symbol: "AMZN", side: "long", size: 10, entryPrice: 186.40, exitPrice: 181.20, entryTime: now - 21 * DAY, exitTime: now - 19 * DAY, stopLoss: null, takeProfit: null, pnl: -53.24, pnlPoints: -5.20, commission: 1.24 },
-    { id: "demo-t4", symbol: "NVDA", side: "long", size: 5, entryPrice: 842.00, exitPrice: 891.50, entryTime: now - 18 * DAY, exitTime: now - 16 * DAY, stopLoss: 820.00, takeProfit: null, pnl: 246.26, pnlPoints: 49.50, commission: 1.24 },
-    { id: "demo-t5", symbol: "JPM", side: "long", size: 15, entryPrice: 195.80, exitPrice: 202.40, entryTime: now - 15 * DAY, exitTime: now - 13 * DAY, stopLoss: null, takeProfit: 205.00, pnl: 97.76, pnlPoints: 6.60, commission: 1.24 },
-    { id: "demo-t6", symbol: "TSLA", side: "short", size: 8, entryPrice: 258.90, exitPrice: 242.10, entryTime: now - 14 * DAY, exitTime: now - 12 * DAY, stopLoss: 270.00, takeProfit: null, pnl: 133.16, pnlPoints: 16.80, commission: 1.24 },
-    { id: "demo-t7", symbol: "GOOGL", side: "long", size: 18, entryPrice: 148.90, exitPrice: 146.20, entryTime: now - 11 * DAY, exitTime: now - 10 * DAY, stopLoss: null, takeProfit: null, pnl: -49.84, pnlPoints: -2.70, commission: 1.24 },
-    { id: "demo-t8", symbol: "V", side: "long", size: 10, entryPrice: 278.50, exitPrice: 286.80, entryTime: now - 10 * DAY, exitTime: now - 8 * DAY, stopLoss: 270.00, takeProfit: null, pnl: 81.76, pnlPoints: 8.30, commission: 1.24 },
-    { id: "demo-t9", symbol: "CRM", side: "long", size: 12, entryPrice: 312.40, exitPrice: 305.80, entryTime: now - 9 * DAY, exitTime: now - 7 * DAY, stopLoss: null, takeProfit: null, pnl: -80.44, pnlPoints: -6.60, commission: 1.24 },
-    { id: "demo-t10", symbol: "MSFT", side: "long", size: 8, entryPrice: 405.20, exitPrice: 418.60, entryTime: now - 8 * DAY, exitTime: now - 6 * DAY, stopLoss: 395.00, takeProfit: null, pnl: 105.96, pnlPoints: 13.40, commission: 1.24 },
-    { id: "demo-t11", symbol: "AMD", side: "long", size: 20, entryPrice: 162.30, exitPrice: 171.80, entryTime: now - 6 * DAY, exitTime: now - 5 * DAY, stopLoss: null, takeProfit: 175.00, pnl: 188.76, pnlPoints: 9.50, commission: 1.24 },
-    { id: "demo-t12", symbol: "NFLX", side: "long", size: 6, entryPrice: 891.50, exitPrice: 878.30, entryTime: now - 4 * DAY, exitTime: now - 3 * DAY, stopLoss: null, takeProfit: null, pnl: -80.44, pnlPoints: -13.20, commission: 1.24 },
-    { id: "demo-t13", symbol: "SPY", side: "long", size: 25, entryPrice: 535.60, exitPrice: 542.80, entryTime: now - 3 * DAY, exitTime: now - 2 * DAY, stopLoss: 528.00, takeProfit: null, pnl: 178.76, pnlPoints: 7.20, commission: 1.24 },
-    { id: "demo-t14", symbol: "QQQ", side: "long", size: 15, entryPrice: 485.20, exitPrice: 492.50, entryTime: now - 2 * DAY, exitTime: now - 1 * DAY, stopLoss: null, takeProfit: null, pnl: 108.26, pnlPoints: 7.30, commission: 1.24 },
+    { id: "demo-t1",  symbol: "AAPL",  side: "long", size: 20, entryPrice: 218.30, exitPrice: 226.45, entryTime: now - 88 * DAY, exitTime: now - 80 * DAY, stopLoss: null, takeProfit: null, pnl: 161.76, pnlPoints: 8.15, commission: 1.24 },
+    { id: "demo-t2",  symbol: "GOOGL", side: "long", size: 15, entryPrice: 178.90, exitPrice: 185.40, entryTime: now - 82 * DAY, exitTime: now - 76 * DAY, stopLoss: null, takeProfit: null, pnl: 96.26,  pnlPoints: 6.50, commission: 1.24 },
+    { id: "demo-t3",  symbol: "AMZN",  side: "long", size: 10, entryPrice: 208.40, exitPrice: 203.10, entryTime: now - 78 * DAY, exitTime: now - 73 * DAY, stopLoss: null, takeProfit: null, pnl: -54.24, pnlPoints: -5.30, commission: 1.24 },
+    { id: "demo-t4",  symbol: "NVDA",  side: "long", size: 12, entryPrice: 118.50, exitPrice: 127.80, entryTime: now - 74 * DAY, exitTime: now - 69 * DAY, stopLoss: null, takeProfit: null, pnl: 110.36, pnlPoints: 9.30, commission: 1.24 },
+    { id: "demo-t5",  symbol: "META",  side: "long", size: 8,  entryPrice: 572.60, exitPrice: 589.30, entryTime: now - 70 * DAY, exitTime: now - 65 * DAY, stopLoss: null, takeProfit: null, pnl: 132.36, pnlPoints: 16.70, commission: 1.24 },
+    { id: "demo-t6",  symbol: "TSLA",  side: "long", size: 10, entryPrice: 342.80, exitPrice: 358.40, entryTime: now - 66 * DAY, exitTime: now - 62 * DAY, stopLoss: null, takeProfit: null, pnl: 154.76, pnlPoints: 15.60, commission: 1.24 },
+    { id: "demo-t7",  symbol: "V",     side: "long", size: 12, entryPrice: 318.50, exitPrice: 312.80, entryTime: now - 63 * DAY, exitTime: now - 60 * DAY, stopLoss: null, takeProfit: null, pnl: -69.64, pnlPoints: -5.70, commission: 1.24 },
+    { id: "demo-t8",  symbol: "JPM",   side: "long", size: 15, entryPrice: 248.20, exitPrice: 256.90, entryTime: now - 60 * DAY, exitTime: now - 56 * DAY, stopLoss: null, takeProfit: null, pnl: 129.26, pnlPoints: 8.70, commission: 1.24 },
+    { id: "demo-t9",  symbol: "CRM",   side: "long", size: 10, entryPrice: 338.40, exitPrice: 329.60, entryTime: now - 58 * DAY, exitTime: now - 55 * DAY, stopLoss: null, takeProfit: null, pnl: -89.24, pnlPoints: -8.80, commission: 1.24 },
+    { id: "demo-t10", symbol: "MSFT",  side: "long", size: 8,  entryPrice: 418.50, exitPrice: 432.80, entryTime: now - 56 * DAY, exitTime: now - 53 * DAY, stopLoss: null, takeProfit: null, pnl: 113.16, pnlPoints: 14.30, commission: 1.24 },
   ];
 
   const totalClosedPnl = demoHistory.reduce((sum, t) => sum + t.pnl, 0);
@@ -147,6 +159,9 @@ export function useTradingEngine() {
         equity: prev.equity - commission,
         positions: [...prev.positions, position],
       }));
+
+      // Fire-and-forget sync to backend DB
+      syncPosition(position);
     },
     [],
   );
@@ -165,6 +180,7 @@ export function useTradingEngine() {
             : position.entryPrice - currentPrice;
         const pnl = pnlPoints * position.size * pointValue;
         const exitCommission = getCommissionPerSide(position.symbol) * position.size;
+        const exitTime = Date.now();
 
         const closedTrade: ClosedTrade = {
           id: position.id,
@@ -174,13 +190,20 @@ export function useTradingEngine() {
           entryPrice: position.entryPrice,
           exitPrice: currentPrice,
           entryTime: position.entryTime,
-          exitTime: Date.now(),
+          exitTime,
           stopLoss: position.stopLoss,
           takeProfit: position.takeProfit,
           pnl: pnl - exitCommission,
           pnlPoints,
           commission: position.commission + exitCommission,
         };
+
+        // Fire-and-forget sync to backend DB
+        syncClosePosition(
+          id, currentPrice, exitTime,
+          pnl - exitCommission, pnlPoints,
+          position.commission + exitCommission,
+        );
 
         const remainingPositions = prev.positions.filter((p) => p.id !== id);
         const newBalance = prev.balance + pnl - exitCommission;
@@ -384,12 +407,14 @@ export function useTradingEngine() {
     [],
   );
 
-  const updatePrices = useCallback((currentPrice: number) => {
+  const updatePrices = useCallback((currentPrice: number, symbol?: string) => {
     setAccountState((prev) => {
-      const updatedPositions = prev.positions.map((p) => ({
-        ...p,
-        unrealizedPnl: calcUnrealizedPnl(p, currentPrice),
-      }));
+      const updatedPositions = prev.positions.map((p) => {
+        // Only update positions matching the symbol (or all if no symbol given and only one position)
+        if (symbol && p.symbol !== symbol) return p;
+        if (!symbol && prev.positions.length > 1) return p;
+        return { ...p, unrealizedPnl: calcUnrealizedPnl(p, currentPrice) };
+      });
 
       const totalUnrealized = updatedPositions.reduce(
         (sum, p) => sum + p.unrealizedPnl,
@@ -408,6 +433,35 @@ export function useTradingEngine() {
   const resetAccount = useCallback(() => {
     setAccountState(initialAccountState);
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* noop */ }
+    // Sync reset state to backend
+    syncFullState({
+      balance: initialAccountState.balance,
+      equity: initialAccountState.equity,
+      unrealizedPnl: 0,
+      positions: [],
+      tradeHistory: [],
+    });
+  }, []);
+
+  const setBalance = useCallback((newBalance: number) => {
+    setAccountState(() => {
+      const state: AccountState = {
+        balance: newBalance,
+        equity: newBalance,
+        unrealizedPnl: 0,
+        positions: [],
+        orders: [],
+        tradeHistory: [],
+      };
+      syncFullState({
+        balance: newBalance,
+        equity: newBalance,
+        unrealizedPnl: 0,
+        positions: [],
+        tradeHistory: [],
+      });
+      return state;
+    });
   }, []);
 
   return {
@@ -419,5 +473,6 @@ export function useTradingEngine() {
     closeAllLosing,
     updatePrices,
     resetAccount,
+    setBalance,
   };
 }

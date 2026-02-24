@@ -3,7 +3,7 @@
 import React from "react";
 import { motion } from "framer-motion";
 
-export type AppPage = "trade" | "dashboard" | "portfolio" | "news" | "settings";
+export type AppPage = "trade" | "dashboard" | "portfolio" | "news" | "alpha" | "settings";
 
 interface PageNavProps {
   activePage: AppPage;

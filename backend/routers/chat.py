@@ -12,15 +12,31 @@ from typing import List, Dict
 
 from fastapi import APIRouter
 from pydantic import BaseModel
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 from agent.prompts import ALPHY_SYSTEM_PROMPT
-from agent.tools import TOOLS, TOOL_HANDLERS, handle_run_backtest, handle_generate_pinescript, handle_run_walk_forward
-from agent.strategy_agent import generate_strategy, generate_pinescript
+from agent.tools import TOOLS, TOOL_HANDLERS, handle_run_backtest, handle_generate_pinescript, handle_run_walk_forward, handle_run_preset_strategy, handle_run_parameter_sweep
+from agent.strategy_agent import generate_strategy, generate_pinescript, generate_vbt_strategy
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
-client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+
+def _sanitize_floats(obj):
+    """Replace NaN/Inf with JSON-safe values recursively."""
+    if isinstance(obj, float):
+        if obj != obj:  # NaN
+            return None
+        if obj == float("inf"):
+            return 9999.99
+        if obj == float("-inf"):
+            return -9999.99
+    elif isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
+
+client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
 MAX_TOOL_ROUNDS = 5  # Prevent infinite tool-calling loops
 
@@ -47,7 +63,7 @@ class ChatRequest(BaseModel):
     symbol: str = "NQ=F"
     period: str = "1y"
     interval: str = "1d"
-    initial_balance: float = 50000.0
+    initial_balance: float = 25000.0
     conversation_history: List[Dict] = []
 
 
@@ -71,11 +87,11 @@ async def chat(req: ChatRequest):
     monte_carlo_result = None
     walk_forward_result = None
     trade_analysis_result = None
-    chart_script_result = None
+    chart_script_results: list = []
     tool_data = []
 
     for _round in range(MAX_TOOL_ROUNDS):
-        response = client.messages.create(
+        response = await client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=4096,
             system=ALPHY_SYSTEM_PROMPT,
@@ -92,7 +108,7 @@ async def chat(req: ChatRequest):
             final_text = "\n".join(text_parts) if text_parts else "I couldn't generate a response."
             final_text = strip_markdown(final_text)
 
-            return {
+            return _sanitize_floats({
                 "message": final_text,
                 "strategy": backtest_result.get("strategy") if backtest_result else None,
                 "backtest_result": _format_backtest_for_frontend(backtest_result) if backtest_result else None,
@@ -100,9 +116,9 @@ async def chat(req: ChatRequest):
                 "monte_carlo": monte_carlo_result,
                 "walk_forward": walk_forward_result,
                 "trade_analysis": trade_analysis_result,
-                "chart_script": chart_script_result,
+                "chart_scripts": chart_script_results if chart_script_results else None,
                 "tool_data": tool_data if tool_data else None,
-            }
+            })
 
         # Execute tool calls and collect results
         # First, add Claude's response (with tool_use blocks) to messages
@@ -116,7 +132,7 @@ async def chat(req: ChatRequest):
 
             try:
                 if tool_name == "run_backtest":
-                    result_str = await handle_run_backtest(tool_input, generate_strategy)
+                    result_str = await handle_run_backtest(tool_input, generate_strategy, generate_vbt_strategy)
                     result_data = json.loads(result_str)
                     if "error" not in result_data:
                         backtest_result = result_data
@@ -133,6 +149,19 @@ async def chat(req: ChatRequest):
                     result_data = json.loads(result_str)
                     if "error" not in result_data:
                         walk_forward_result = result_data
+                elif tool_name == "run_parameter_sweep":
+                    result_str = await handle_run_parameter_sweep(tool_input, generate_vbt_strategy)
+                    result_data = json.loads(result_str)
+                    if "error" not in result_data:
+                        # Store sweep results for frontend
+                        pass
+                elif tool_name == "run_preset_strategy":
+                    result_str = await handle_run_preset_strategy(tool_input)
+                    result_data = json.loads(result_str)
+                    if "error" not in result_data:
+                        backtest_result = result_data
+                        if result_data.get("monte_carlo"):
+                            monte_carlo_result = result_data["monte_carlo"]
                 elif tool_name == "run_monte_carlo":
                     result_str = await TOOL_HANDLERS[tool_name](tool_input)
                     result_data = json.loads(result_str)
@@ -146,8 +175,20 @@ async def chat(req: ChatRequest):
                 elif tool_name == "create_chart_script":
                     result_str = await TOOL_HANDLERS[tool_name](tool_input)
                     result_data = json.loads(result_str)
-                    if "error" not in result_data:
-                        chart_script_result = result_data.get("chart_script")
+                    if "error" not in result_data and result_data.get("chart_script"):
+                        chart_script_results.append(result_data["chart_script"])
+                elif tool_name in ("detect_chart_patterns", "detect_key_levels", "detect_divergences"):
+                    result_str = await TOOL_HANDLERS[tool_name](tool_input)
+                    result_data = json.loads(result_str)
+                    if "error" not in result_data and result_data.get("chart_script"):
+                        chart_script_results.append(result_data["chart_script"])
+                elif tool_name == "load_saved_strategy":
+                    result_str = await TOOL_HANDLERS[tool_name](tool_input)
+                    result_data = json.loads(result_str)
+                    if "error" not in result_data and result_data.get("trades"):
+                        backtest_result = result_data
+                        if result_data.get("monte_carlo"):
+                            monte_carlo_result = result_data["monte_carlo"]
                 elif tool_name in TOOL_HANDLERS:
                     result_str = await TOOL_HANDLERS[tool_name](tool_input)
                     result_data = json.loads(result_str)
@@ -173,7 +214,7 @@ async def chat(req: ChatRequest):
         messages.append({"role": "user", "content": tool_results})
 
     # If we hit the max rounds, return what we have
-    return {
+    return _sanitize_floats({
         "message": "I gathered the data but hit my tool-calling limit. Here's what I found so far.",
         "strategy": backtest_result.get("strategy") if backtest_result else None,
         "backtest_result": _format_backtest_for_frontend(backtest_result) if backtest_result else None,
@@ -181,9 +222,9 @@ async def chat(req: ChatRequest):
         "monte_carlo": monte_carlo_result,
         "walk_forward": walk_forward_result,
         "trade_analysis": trade_analysis_result,
-        "chart_script": chart_script_result,
+        "chart_scripts": chart_script_results if chart_script_results else None,
         "tool_data": tool_data if tool_data else None,
-    }
+    })
 
 
 def _format_backtest_for_frontend(result: dict) -> dict | None:

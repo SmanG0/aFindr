@@ -2,6 +2,41 @@ import { NextRequest, NextResponse } from "next/server";
 
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://127.0.0.1:8000";
 
+// ─── In-memory cache (60s TTL) ───
+const cache = new Map<string, { data: unknown; ts: number }>();
+const CACHE_TTL = 60_000;
+
+// ─── Yahoo Finance crumb cache (30min TTL) ───
+let yahooCrumb: { crumb: string; cookie: string; ts: number } | null = null;
+const CRUMB_TTL = 30 * 60_000;
+
+async function getYahooCrumb(): Promise<{ crumb: string; cookie: string }> {
+  if (yahooCrumb && Date.now() - yahooCrumb.ts < CRUMB_TTL) {
+    return { crumb: yahooCrumb.crumb, cookie: yahooCrumb.cookie };
+  }
+  // Step 1: Hit fc.yahoo.com to get a cookie
+  const initRes = await fetch("https://fc.yahoo.com/", {
+    headers: { "User-Agent": "Mozilla/5.0" },
+    redirect: "manual",
+  });
+  const setCookieHeader = initRes.headers.get("set-cookie") || "";
+  const cookie = setCookieHeader.split(";")[0] || "";
+
+  // Step 2: Get crumb using the cookie
+  const crumbRes = await fetch("https://query2.finance.yahoo.com/v1/test/getcrumb", {
+    headers: { "User-Agent": "Mozilla/5.0", Cookie: cookie },
+  });
+  const crumb = await crumbRes.text();
+  yahooCrumb = { crumb, cookie, ts: Date.now() };
+  return { crumb, cookie };
+}
+
+function fetchWithTimeout(url: string, opts: RequestInit & { next?: { revalidate: number } }, ms = 3000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ ticker: string }> }
@@ -10,76 +45,160 @@ export async function GET(
     const { ticker } = await params;
     const sym = ticker.toUpperCase();
 
-    // Primary: use backend yfinance endpoint (handles Yahoo auth automatically)
+    // Check cache
+    const cached = cache.get(sym);
+    if (cached && Date.now() - cached.ts < CACHE_TTL) {
+      return NextResponse.json(cached.data);
+    }
+
+    // Race: try backend with 500ms timeout, fall through if slow/down
     try {
-      const backendRes = await fetch(`${FASTAPI_URL}/api/news/stock/${encodeURIComponent(sym)}/full`, {
-        next: { revalidate: 0 },
-      });
+      const backendRes = await fetchWithTimeout(
+        `${FASTAPI_URL}/api/news/stock/${encodeURIComponent(sym)}/full`,
+        { next: { revalidate: 0 } },
+        500
+      );
       if (backendRes.ok) {
         const data = await backendRes.json();
         if (!data.error) {
+          cache.set(sym, { data, ts: Date.now() });
           return NextResponse.json(data);
         }
       }
     } catch {
-      // Backend unavailable, fall through to direct Yahoo calls
+      // Backend unavailable or too slow, fall through
     }
 
-    // Fallback: direct Yahoo Finance v8 chart API (always works, no auth needed)
+    // ─── Fire all Yahoo requests in parallel ───
+    // Get crumb for authenticated requests
+    let authCrumb: { crumb: string; cookie: string } | null = null;
+    try { authCrumb = await getYahooCrumb(); } catch { /* continue without crumb */ }
+
+    const yahooHeaders: Record<string, string> = { "User-Agent": "Mozilla/5.0" };
+    if (authCrumb?.cookie) yahooHeaders["Cookie"] = authCrumb.cookie;
+
     const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=5d`;
-    const chartRes = await fetch(chartUrl, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-      next: { revalidate: 0 },
-    });
+    const modules = [
+      "assetProfile", "defaultKeyStatistics", "financialData",
+      "summaryDetail", "recommendationTrend", "earnings", "upgradeDowngradeHistory",
+    ].join(",");
+    const crumbParam = authCrumb?.crumb ? `&crumb=${encodeURIComponent(authCrumb.crumb)}` : "";
+    const summaryUrl = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(sym)}?modules=${modules}${crumbParam}`;
 
-    if (!chartRes.ok) {
-      return NextResponse.json({ error: `Yahoo chart error: ${chartRes.status}` }, { status: chartRes.status });
+    // Guess peers early (based on ticker alone) so we can fetch them in parallel
+    const guessedPeers = getSectorPeers(sym, "");
+
+    const peerUrls = guessedPeers.slice(0, 5).map(
+      (p) => `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(p)}?interval=1d&range=1d`
+    );
+
+    // Fire all requests simultaneously
+    const [chartRes, summaryRes, ...peerResults] = await Promise.allSettled([
+      fetchWithTimeout(chartUrl, { headers: yahooHeaders, next: { revalidate: 0 } }, 5000),
+      fetchWithTimeout(summaryUrl, { headers: yahooHeaders, next: { revalidate: 0 } }, 5000),
+      ...peerUrls.map((url) =>
+        fetchWithTimeout(url, { headers: yahooHeaders, next: { revalidate: 0 } }, 4000)
+      ),
+    ]);
+
+    // ─── Parse chart data ───
+    let meta: Record<string, unknown> | null = null;
+    if (chartRes.status === "fulfilled" && chartRes.value.ok) {
+      const chartJson = await chartRes.value.json();
+      meta = chartJson.chart?.result?.[0]?.meta ?? null;
     }
-
-    const chartJson = await chartRes.json();
-    const meta = chartJson.chart?.result?.[0]?.meta;
     if (!meta) {
       return NextResponse.json({ error: "No chart data" }, { status: 404 });
     }
 
-    const price = meta.regularMarketPrice ?? 0;
-    const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? price;
+    const price = (meta.regularMarketPrice as number) ?? 0;
+    const prevClose = (meta.chartPreviousClose as number) ?? (meta.previousClose as number) ?? price;
     const change = Math.round((price - prevClose) * 100) / 100;
     const changePct = prevClose ? Math.round(((price - prevClose) / prevClose) * 10000) / 100 : 0;
 
-    // Also try the v10 quoteSummary (may work depending on rate limits)
+    // ─── Parse summary data (best-effort) ───
     let profile: Record<string, unknown> = {};
     let keyStats: Record<string, unknown> = {};
     let finData: Record<string, unknown> = {};
+    let summaryDetail: Record<string, unknown> = {};
     let recTrend: Record<string, unknown>[] = [];
     let earningsData: Record<string, unknown> = {};
     let upgradeHistory: Record<string, unknown>[] = [];
 
-    try {
-      const modules = [
-        "assetProfile", "defaultKeyStatistics", "financialData",
-        "recommendationTrend", "earnings", "upgradeDowngradeHistory",
-      ].join(",");
-      const summaryUrl = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(sym)}?modules=${modules}`;
-      const summaryRes = await fetch(summaryUrl, {
-        headers: { "User-Agent": "Mozilla/5.0" },
-        next: { revalidate: 0 },
-      });
-      if (summaryRes.ok) {
-        const summaryJson = await summaryRes.json();
+    if (summaryRes.status === "fulfilled" && summaryRes.value.ok) {
+      try {
+        const summaryJson = await summaryRes.value.json();
         const result = summaryJson.quoteSummary?.result?.[0];
         if (result) {
           profile = result.assetProfile || {};
           keyStats = result.defaultKeyStatistics || {};
           finData = result.financialData || {};
+          summaryDetail = result.summaryDetail || {};
           recTrend = result.recommendationTrend?.trend || [];
           earningsData = result.earnings || {};
           upgradeHistory = result.upgradeDowngradeHistory?.history || [];
         }
-      }
-    } catch { /* v10 may be blocked, continue with basic data */ }
+      } catch { /* parse error, continue with basic data */ }
+    }
 
-    // ─── Helper: extract raw numeric value from Yahoo's {raw, fmt} objects ───
+    // ─── Parse peers (already fetched in parallel) ───
+    const actualSector = (profile.sector as string) || "";
+    const actualPeers = getSectorPeers(sym, actualSector);
+    // If guessed peers match actual peers, use the parallel results
+    const peersMatch = guessedPeers.length === actualPeers.length &&
+      guessedPeers.every((p, i) => p === actualPeers[i]);
+
+    let peers: { ticker: string; name: string; price: number; change: number; changePct: number }[] = [];
+
+    if (peersMatch) {
+      // Use already-fetched peer data
+      const peerData = await Promise.all(
+        peerResults.map(async (r, i) => {
+          if (r.status !== "fulfilled" || !r.value.ok) return null;
+          try {
+            const peerJson = await r.value.json();
+            const peerMeta = peerJson.chart?.result?.[0]?.meta;
+            if (!peerMeta) return null;
+            const peerPrice = peerMeta.regularMarketPrice ?? 0;
+            const peerPrev = peerMeta.chartPreviousClose ?? peerMeta.previousClose ?? peerPrice;
+            const peerChange = peerPrice - peerPrev;
+            const peerChangePct = peerPrev ? (peerChange / peerPrev) * 100 : 0;
+            return {
+              ticker: guessedPeers[i], name: peerMeta.shortName || guessedPeers[i],
+              price: Math.round(peerPrice * 100) / 100,
+              change: Math.round(peerChange * 100) / 100,
+              changePct: Math.round(peerChangePct * 100) / 100,
+            };
+          } catch { return null; }
+        })
+      );
+      peers = peerData.filter(Boolean) as typeof peers;
+    } else {
+      // Different peers needed — fetch them now (rare case)
+      const peerPromises = actualPeers.slice(0, 5).map(async (peerSym) => {
+        try {
+          const peerUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(peerSym)}?interval=1d&range=1d`;
+          const peerRes = await fetchWithTimeout(peerUrl, { headers: yahooHeaders, next: { revalidate: 0 } }, 4000);
+          if (!peerRes.ok) return null;
+          const peerJson = await peerRes.json();
+          const peerMeta = peerJson.chart?.result?.[0]?.meta;
+          if (!peerMeta) return null;
+          const peerPrice = peerMeta.regularMarketPrice ?? 0;
+          const peerPrev = peerMeta.chartPreviousClose ?? peerMeta.previousClose ?? peerPrice;
+          const peerChange = peerPrice - peerPrev;
+          const peerChangePct = peerPrev ? (peerChange / peerPrev) * 100 : 0;
+          return {
+            ticker: peerSym, name: peerMeta.shortName || peerSym,
+            price: Math.round(peerPrice * 100) / 100,
+            change: Math.round(peerChange * 100) / 100,
+            changePct: Math.round(peerChangePct * 100) / 100,
+          };
+        } catch { return null; }
+      });
+      peers = (await Promise.all(peerPromises)).filter(Boolean) as typeof peers;
+    }
+
+    // ─── Helpers ───
     const rawVal = (obj: Record<string, unknown>, key: string): number | null => {
       const v = obj[key];
       if (v && typeof v === "object" && "raw" in (v as Record<string, unknown>)) {
@@ -87,7 +206,6 @@ export async function GET(
       }
       return typeof v === "number" ? v : null;
     };
-
     const fmtLarge = (n: number | null): string => {
       if (n == null || !isFinite(n)) return "-";
       if (n >= 1e12) return "$" + (n / 1e12).toFixed(2) + "T";
@@ -130,7 +248,6 @@ export async function GET(
     // Earnings
     const earningsChart = (earningsData as Record<string, unknown>).earningsChart as Record<string, unknown> | undefined;
     const financialsChart = (earningsData as Record<string, unknown>).financialsChart as Record<string, unknown> | undefined;
-
     const qtrEarnings = ((earningsChart?.quarterly || []) as Record<string, unknown>[]).map((q) => ({
       quarter: (q.date as string) || "",
       actual: rawVal(q, "actual"),
@@ -161,7 +278,7 @@ export async function GET(
 
     const data = {
       ticker: sym,
-      name: meta.shortName || meta.longName || sym,
+      name: (meta.shortName as string) || (meta.longName as string) || sym,
       price: Math.round(price * 100) / 100,
       change, changePct,
       prevClose: Math.round(prevClose * 100) / 100,
@@ -171,16 +288,16 @@ export async function GET(
       founded: (profile.startDate as string) || "-",
       industry: (profile.industry as string) || "-",
       website: (profile.website as string) || "-",
-      marketCap: fmtLarge(rawVal(finData, "marketCap") || rawVal(keyStats, "enterpriseValue")),
-      peRatio: fmtNum(rawVal(keyStats, "trailingPE")),
-      dividendYield: fmtPctAlready(rawVal(keyStats, "dividendYield")),
-      avgVolume: fmtLarge(rawVal(finData, "averageDailyVolume10Day")),
-      volume: fmtLarge(rawVal(finData, "volume")),
-      dayHigh: rawVal(finData, "dayHigh") || 0,
-      dayLow: rawVal(finData, "dayLow") || 0,
-      open: rawVal(finData, "open") || 0,
-      week52High: rawVal(keyStats, "fiftyTwoWeekHigh") || 0,
-      week52Low: rawVal(keyStats, "fiftyTwoWeekLow") || 0,
+      marketCap: fmtLarge(rawVal(summaryDetail, "marketCap") || rawVal(finData, "marketCap") || rawVal(keyStats, "enterpriseValue")),
+      peRatio: fmtNum(rawVal(summaryDetail, "trailingPE") || rawVal(keyStats, "trailingPE")),
+      dividendYield: fmtPctAlready(rawVal(summaryDetail, "dividendYield") ?? rawVal(keyStats, "dividendYield")),
+      avgVolume: fmtLarge(rawVal(summaryDetail, "averageDailyVolume10Day") || rawVal(finData, "averageDailyVolume10Day")),
+      volume: fmtLarge(rawVal(summaryDetail, "volume") || rawVal(finData, "volume")),
+      dayHigh: rawVal(summaryDetail, "dayHigh") || rawVal(finData, "dayHigh") || 0,
+      dayLow: rawVal(summaryDetail, "dayLow") || rawVal(finData, "dayLow") || 0,
+      open: rawVal(summaryDetail, "open") || rawVal(finData, "open") || 0,
+      week52High: rawVal(summaryDetail, "fiftyTwoWeekHigh") || rawVal(keyStats, "fiftyTwoWeekHigh") || 0,
+      week52Low: rawVal(summaryDetail, "fiftyTwoWeekLow") || rawVal(keyStats, "fiftyTwoWeekLow") || 0,
       shortFloat: fmtPct(rawVal(keyStats, "shortPercentOfFloat")),
       forwardPE: fmtNum(rawVal(keyStats, "forwardPE")),
       pegRatio: fmtNum(rawVal(keyStats, "pegRatio")),
@@ -205,7 +322,7 @@ export async function GET(
       debtToEquity: fmtNum(rawVal(finData, "debtToEquity")),
       currentRatio: fmtNum(rawVal(finData, "currentRatio")),
       quickRatio: fmtNum(rawVal(finData, "quickRatio")),
-      beta: fmtNum(rawVal(keyStats, "beta")),
+      beta: fmtNum(rawVal(keyStats, "beta") || rawVal(summaryDetail, "beta")),
       fiftyDayMA: fmtNum(rawVal(keyStats, "fiftyDayAverage")),
       twoHundredDayMA: fmtNum(rawVal(keyStats, "twoHundredDayAverage")),
       trailingEPS: fmtNum(rawVal(keyStats, "trailingEps")),
@@ -236,37 +353,12 @@ export async function GET(
         sellPercent: totalRatings > 0 ? Math.round((sellCount / totalRatings) * 1000) / 10 : 0,
       },
       recentRatings,
-      peers: [] as { ticker: string; name: string; price: number; change: number; changePct: number }[],
-      exchange: meta.exchangeName || "-",
-      sector: (profile.sector as string) || "-",
+      peers,
+      exchange: (meta.exchangeName as string) || "-",
+      sector: actualSector || "-",
     };
 
-    // Fetch peers
-    const sectorPeers = getSectorPeers(sym, data.sector);
-    if (sectorPeers.length > 0) {
-      const peerPromises = sectorPeers.slice(0, 5).map(async (peerSym) => {
-        try {
-          const peerUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(peerSym)}?interval=1d&range=1d`;
-          const peerRes = await fetch(peerUrl, { headers: { "User-Agent": "Mozilla/5.0" }, next: { revalidate: 0 } });
-          if (!peerRes.ok) return null;
-          const peerJson = await peerRes.json();
-          const peerMeta = peerJson.chart?.result?.[0]?.meta;
-          if (!peerMeta) return null;
-          const peerPrice = peerMeta.regularMarketPrice ?? 0;
-          const peerPrev = peerMeta.chartPreviousClose ?? peerMeta.previousClose ?? peerPrice;
-          const peerChange = peerPrice - peerPrev;
-          const peerChangePct = peerPrev ? (peerChange / peerPrev) * 100 : 0;
-          return {
-            ticker: peerSym, name: peerMeta.shortName || peerSym,
-            price: Math.round(peerPrice * 100) / 100,
-            change: Math.round(peerChange * 100) / 100,
-            changePct: Math.round(peerChangePct * 100) / 100,
-          };
-        } catch { return null; }
-      });
-      data.peers = (await Promise.all(peerPromises)).filter(Boolean) as typeof data.peers;
-    }
-
+    cache.set(sym, { data, ts: Date.now() });
     return NextResponse.json(data);
   } catch (err) {
     return NextResponse.json(

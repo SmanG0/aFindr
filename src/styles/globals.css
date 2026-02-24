@@ -65,8 +65,8 @@
   --radius-pill: 30px;
 
   /* News section - dark brown (normalized with theme) */
-  --bg-news: #2d2824;
-  --bg-news-raised: #36322d;
+  --bg-news: #1a1714;
+  --bg-news-raised: #211e1a;
 
   /* Legacy aliases */
   --background: var(--bg);
@@ -311,7 +311,7 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 10px;
-  background: rgba(236,227,213,0.025);
+  background: var(--bg-raised);
   border-bottom: 1px solid var(--divider);
   position: sticky;
   top: 0;

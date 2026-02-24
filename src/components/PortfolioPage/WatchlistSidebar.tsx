@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import type { Position } from "@/lib/types";
 import type { PortfolioQuote } from "@/lib/api";
 import { fetchPortfolioQuotes } from "@/lib/api";
 import { SYMBOL_LIBRARY } from "@/lib/symbols";
@@ -9,11 +8,10 @@ import SparklineSVG from "./shared/SparklineSVG";
 import { formatCurrency, formatPercent } from "@/lib/portfolio-utils";
 
 interface WatchlistSidebarProps {
-  positions: Position[];
   onSelectTicker: (ticker: string) => void;
 }
 
-export default function WatchlistSidebar({ positions, onSelectTicker }: WatchlistSidebarProps) {
+export default function WatchlistSidebar({ onSelectTicker }: WatchlistSidebarProps) {
   const DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "GOOGL", "TSLA", "META", "AMZN", "V", "JPM"];
   const [watchlist, setWatchlist] = useState<string[]>(DEFAULT_WATCHLIST);
   const [wlHydrated, setWlHydrated] = useState(false);
@@ -31,7 +29,6 @@ export default function WatchlistSidebar({ positions, onSelectTicker }: Watchlis
   }, [watchlist, wlHydrated]);
 
   // ─── Collapsible Sections ───
-  const [holdingsOpen, setHoldingsOpen] = useState(true);
   const [watchlistOpen, setWatchlistOpen] = useState(true);
 
   // ─── Search ───
@@ -79,10 +76,8 @@ export default function WatchlistSidebar({ positions, onSelectTicker }: Watchlis
   const [quotes, setQuotes] = useState<Record<string, PortfolioQuote>>({});
 
   const allSymbols = useMemo(() => {
-    const posSymbols = positions.map((p) => p.symbol);
-    const unique = [...new Set([...posSymbols, ...watchlist])];
-    return unique;
-  }, [positions, watchlist]);
+    return [...new Set(watchlist)];
+  }, [watchlist]);
 
   useEffect(() => {
     if (allSymbols.length === 0) return;
@@ -104,6 +99,23 @@ export default function WatchlistSidebar({ positions, onSelectTicker }: Watchlis
     };
   }, [allSymbols]);
 
+  // ─── Thesis sentiments from localStorage ───
+  const [thesisSentiments, setThesisSentiments] = useState<Record<string, "bullish" | "bearish" | "neutral">>({});
+
+  useEffect(() => {
+    const sentiments: Record<string, "bullish" | "bearish" | "neutral"> = {};
+    for (const sym of watchlist) {
+      const raw = localStorage.getItem(`afindr_thesis_${sym}`);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed?.sentiment) sentiments[sym] = parsed.sentiment;
+        } catch { /* ignore */ }
+      }
+    }
+    setThesisSentiments(sentiments);
+  }, [watchlist]);
+
   // ─── Watchlist Entries with metadata ───
   const watchlistEntries = useMemo(() => {
     return watchlist.map((sym) => {
@@ -124,91 +136,19 @@ export default function WatchlistSidebar({ positions, onSelectTicker }: Watchlis
     <div
       style={{
         width: 280,
-        flexShrink: 0,
-        borderLeft: "1px solid var(--glass-border)",
-        background: "var(--bg-raised)",
+        borderRadius: 16,
+        background: "rgba(24,22,18,0.92)",
+        backdropFilter: "blur(20px)",
+        border: "1px solid rgba(236,227,213,0.12)",
+        boxShadow: "0 16px 48px rgba(0,0,0,0.4), 0 0 0 1px rgba(236,227,213,0.06)",
         overflowY: "auto",
-        height: "100%",
+        alignSelf: "flex-start",
+        position: "sticky",
+        top: 16,
+        maxHeight: "calc(100vh - 100px)",
+        scrollbarWidth: "none",
       }}
     >
-      {/* ─── Holdings Section ─── */}
-      <div>
-        <button
-          onClick={() => setHoldingsOpen(!holdingsOpen)}
-          className="flex items-center justify-between"
-          style={{
-            width: "100%", padding: "12px 16px",
-            borderBottom: "1px solid var(--border-subtle)",
-            background: "transparent", border: "none",
-            cursor: "pointer", color: "var(--text-muted)",
-          }}
-        >
-          <span style={{ fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-            Holdings
-          </span>
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
-            style={{ transform: holdingsOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 150ms ease" }}>
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
-        </button>
-
-        {holdingsOpen && (
-          <div>
-            {positions.length === 0 ? (
-              <div style={{ padding: "20px 16px", textAlign: "center", color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
-                No open positions
-              </div>
-            ) : (
-              positions.map((pos) => {
-                const quote = quotes[pos.symbol];
-                const currentPrice = quote?.price ?? 0;
-                const sparkline = quote?.sparkline ?? [];
-                return (
-                  <div
-                    key={pos.id}
-                    onClick={() => onSelectTicker(pos.symbol)}
-                    className="flex items-center justify-between"
-                    style={{
-                      padding: "10px 16px",
-                      borderBottom: "1px solid var(--border-subtle)",
-                      cursor: "pointer", transition: "background 80ms ease",
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(236,227,213,0.03)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", fontFamily: "var(--font-mono)" }}>
-                        {pos.symbol}
-                      </div>
-                      <div style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
-                        {pos.size} {pos.side === "long" ? "shares" : "short"}
-                      </div>
-                    </div>
-                    <div style={{ marginRight: 8 }}>
-                      <SparklineSVG data={sparkline} positive={pos.unrealizedPnl >= 0} />
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--text-primary)" }}>
-                        {currentPrice > 0 ? formatCurrency(currentPrice) : "-"}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums",
-                          color: pos.unrealizedPnl >= 0 ? "var(--buy)" : "var(--sell)",
-                          marginTop: 2,
-                        }}
-                      >
-                        {pos.unrealizedPnl >= 0 ? "+" : ""}{pos.unrealizedPnl.toFixed(2)}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        )}
-      </div>
-
       {/* ─── Watchlist Section ─── */}
       <div>
         <div
@@ -337,8 +277,17 @@ export default function WatchlistSidebar({ positions, onSelectTicker }: Watchlis
                     }}
                   >
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--accent-bright)", fontFamily: "var(--font-mono)" }}>
+                      <div className="flex items-center" style={{ gap: 5, fontSize: 13, fontWeight: 600, color: "var(--accent-bright)", fontFamily: "var(--font-mono)" }}>
                         {entry.symbol}
+                        {thesisSentiments[entry.symbol] && (
+                          <span
+                            title={`Thesis: ${thesisSentiments[entry.symbol]}`}
+                            style={{
+                              width: 6, height: 6, borderRadius: "50%", display: "inline-block", flexShrink: 0,
+                              background: thesisSentiments[entry.symbol] === "bullish" ? "var(--buy)" : thesisSentiments[entry.symbol] === "bearish" ? "var(--sell)" : "var(--warning)",
+                            }}
+                          />
+                        )}
                       </div>
                       <div style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 100 }}>
                         {entry.name}

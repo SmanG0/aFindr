@@ -1,8 +1,12 @@
 import ast
+import os
 import re
 import threading
 
-ALLOWED_IMPORTS = {"pandas", "numpy", "ta", "pd", "np"}
+# SANDBOX_MODE: "docker" for production, "thread" for development
+SANDBOX_MODE = os.getenv("SANDBOX_MODE", "thread")
+
+ALLOWED_IMPORTS = {"pandas", "numpy", "ta", "pd", "np", "vectorbt", "vbt"}
 FORBIDDEN_PATTERNS = [
     r"open\s*\(",
     r"__import__",
@@ -74,7 +78,12 @@ def execute_strategy_code(code: str, timeout_seconds: int = 10) -> type:
         raise error[0]
 
     from engine.strategy import BaseStrategy
+    from engine.vbt_strategy import VectorBTStrategy
+    # Check for VectorBTStrategy first (more specific), then BaseStrategy
+    for value in namespace.values():
+        if isinstance(value, type) and issubclass(value, VectorBTStrategy) and value is not VectorBTStrategy:
+            return value
     for value in namespace.values():
         if isinstance(value, type) and issubclass(value, BaseStrategy) and value is not BaseStrategy:
             return value
-    raise ValueError("No BaseStrategy subclass found in generated code")
+    raise ValueError("No BaseStrategy or VectorBTStrategy subclass found in generated code")

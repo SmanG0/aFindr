@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
       symbol: body.symbol || "NQ=F",
       period: "1y",
       interval: body.timeframe || "1d",
-      initial_balance: body.initialBalance || 50000.0,
+      initial_balance: body.initialBalance || 25000.0,
       conversation_history: (body.conversationHistory || []).map(
         (m: { role: string; content: string }) => ({
           role: m.role,
@@ -41,8 +41,12 @@ export async function POST(request: NextRequest) {
     if (data.backtest_result && !data.backtestResult) {
       data.backtestResult = data.backtest_result;
     }
-    if (data.chart_script && !data.chartScript) {
-      data.chartScript = data.chart_script;
+    if (data.chart_scripts && !data.chartScripts) {
+      data.chartScripts = data.chart_scripts;
+    }
+    // Backward compat: single chart_script -> chartScripts array
+    if (data.chart_script && !data.chartScripts) {
+      data.chartScripts = [data.chart_script];
     }
     if (data.trade_analysis && !data.tradeAnalysis) {
       data.tradeAnalysis = data.trade_analysis;

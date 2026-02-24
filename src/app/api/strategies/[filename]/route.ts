@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+const FASTAPI_URL = process.env.FASTAPI_URL || "http://127.0.0.1:8000";
 
 export async function GET(
   _req: NextRequest,
@@ -8,7 +8,7 @@ export async function GET(
 ) {
   const { filename } = await params;
   try {
-    const res = await fetch(`${BACKEND_URL}/strategies/${encodeURIComponent(filename)}`, { cache: "no-store" });
+    const res = await fetch(`${FASTAPI_URL}/api/strategies/${encodeURIComponent(filename)}`, { cache: "no-store" });
     if (!res.ok) {
       return NextResponse.json({ error: "Strategy not found" }, { status: 404 });
     }

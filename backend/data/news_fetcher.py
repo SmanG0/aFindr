@@ -280,6 +280,27 @@ def fetch_all_news(
     return all_items[:limit]
 
 
+def fetch_google_news_rss(query: str, limit: int = 15) -> List[Dict]:
+    """Fetch news from Google News RSS for any search query.
+
+    Works for topics ("tariffs", "OPEC"), tickers ("AAPL stock"), or general queries.
+    """
+    from urllib.parse import quote_plus
+
+    url = f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
+
+    try:
+        parsed = feedparser.parse(url)
+        items = []
+        for entry in parsed.entries[:limit]:
+            item = _entry_to_news_item(entry, "Google News", "Markets")
+            if item["title"]:
+                items.append(item)
+        return items
+    except Exception:
+        return []
+
+
 def get_available_sources() -> List[Dict]:
     """Return list of configured news sources."""
     sources = {}

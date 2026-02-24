@@ -56,11 +56,11 @@ export const DEFAULT_DARK_APPEARANCE: ChartAppearance = {
 export const DEFAULT_LIGHT_APPEARANCE: ChartAppearance = {
   backgroundColor: "#ffffff",
   upColor: "#26a65b",
-  downColor: "#131722",
-  upWickColor: "#131722",
-  downWickColor: "#131722",
-  borderUpColor: "#131722",
-  borderDownColor: "#131722",
+  downColor: "#ef5350",
+  upWickColor: "#26a65b",
+  downWickColor: "#ef5350",
+  borderUpColor: "#26a65b",
+  borderDownColor: "#ef5350",
   gridColor: "rgba(0,0,0,0.06)",
 };
 
@@ -432,7 +432,37 @@ export default function Chart({
       indicatorSeriesRef.current = [];
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [theme, appearance]);
+  }, [theme]);
+
+  // Apply appearance changes live (without re-creating the chart)
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    if (!chart || !series) return;
+
+    const isLight = theme === "light";
+    const defaultAppearance = isLight ? DEFAULT_LIGHT_APPEARANCE : DEFAULT_DARK_APPEARANCE;
+    const app = appearance || defaultAppearance;
+
+    chart.applyOptions({
+      layout: {
+        background: { type: ColorType.Solid, color: app.backgroundColor },
+      },
+      grid: {
+        vertLines: { color: app.gridColor },
+        horzLines: { color: app.gridColor },
+      },
+    });
+
+    series.applyOptions({
+      upColor: app.upColor,
+      downColor: app.downColor,
+      borderUpColor: app.borderUpColor,
+      borderDownColor: app.borderDownColor,
+      wickUpColor: app.upWickColor,
+      wickDownColor: app.downWickColor,
+    });
+  }, [appearance, theme]);
 
   // Update candle data
   useEffect(() => {
@@ -533,13 +563,13 @@ export default function Chart({
 
       const entryLine = series.createPriceLine({
         price: pos.entryPrice,
-        color: entryColor,
-        lineWidth: 2,
-        lineStyle: LineStyle.Solid,
+        color: entryColor + "66",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
         title: `${pos.side === "long" ? "LONG" : "SHORT"} @ ${pos.entryPrice.toFixed(2)}  ${pnlText}`,
-        axisLabelColor: entryColor,
-        axisLabelTextColor: "#ffffff",
+        axisLabelColor: entryColor + "cc",
+        axisLabelTextColor: "rgba(255,255,255,0.85)",
       });
       priceLinesRef.current.push(entryLine);
 
@@ -547,13 +577,13 @@ export default function Chart({
       if (pos.stopLoss !== null) {
         const slLine = series.createPriceLine({
           price: pos.stopLoss,
-          color: isLight ? "#dc2626" : "#ef4444",
+          color: isLight ? "rgba(220,38,38,0.4)" : "rgba(239,68,68,0.4)",
           lineWidth: 1,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
           title: `SL ${pos.stopLoss.toFixed(2)}`,
-          axisLabelColor: isLight ? "#dc2626" : "#ef4444",
-          axisLabelTextColor: "#ffffff",
+          axisLabelColor: isLight ? "rgba(220,38,38,0.7)" : "rgba(239,68,68,0.7)",
+          axisLabelTextColor: "rgba(255,255,255,0.85)",
         });
         priceLinesRef.current.push(slLine);
       }
@@ -562,13 +592,13 @@ export default function Chart({
       if (pos.takeProfit !== null) {
         const tpLine = series.createPriceLine({
           price: pos.takeProfit,
-          color: isLight ? "#16a34a" : "#22c55e",
+          color: isLight ? "rgba(22,163,74,0.4)" : "rgba(34,197,94,0.4)",
           lineWidth: 1,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
           title: `TP ${pos.takeProfit.toFixed(2)}`,
-          axisLabelColor: isLight ? "#16a34a" : "#22c55e",
-          axisLabelTextColor: "#ffffff",
+          axisLabelColor: isLight ? "rgba(22,163,74,0.7)" : "rgba(34,197,94,0.7)",
+          axisLabelTextColor: "rgba(255,255,255,0.85)",
         });
         priceLinesRef.current.push(tpLine);
       }
@@ -1122,9 +1152,12 @@ export default function Chart({
             <div
               className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm text-[9px] font-bold"
               style={{
-                background: isLong ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
-                color: isLong ? "#22c55e" : "#ef4444",
-                border: `1px solid ${isLong ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
+                background: isLong
+                  ? (isLightMode ? "rgba(34,197,94,0.12)" : "rgba(20,30,22,0.95)")
+                  : (isLightMode ? "rgba(239,68,68,0.12)" : "rgba(35,20,20,0.95)"),
+                color: isLong ? "rgba(34,197,94,0.85)" : "rgba(239,68,68,0.85)",
+                border: `1px solid ${isLong ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
+                backdropFilter: "blur(4px)",
               }}
             >
               {isLong ? "▲" : "▼"} {pos.size}
@@ -1845,7 +1878,39 @@ function SettingsColorRow({ label, value, onChange, isLight }: {
   onChange: (color: string) => void;
   isLight: boolean;
 }) {
-  const displayValue = value.startsWith("rgba") || value === "transparent" ? (isLight ? "#ffffff" : "#1a1714") : value;
+  // Parse rgba values to extract hex color and alpha separately
+  let displayHex: string;
+  let alpha: number | null = null;
+
+  if (value.startsWith("rgba")) {
+    const match = value.match(/rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/);
+    if (match) {
+      const r = parseInt(match[1]).toString(16).padStart(2, "0");
+      const g = parseInt(match[2]).toString(16).padStart(2, "0");
+      const b = parseInt(match[3]).toString(16).padStart(2, "0");
+      displayHex = `#${r}${g}${b}`;
+      alpha = parseFloat(match[4]);
+    } else {
+      displayHex = isLight ? "#ffffff" : "#1a1714";
+    }
+  } else if (value === "transparent") {
+    displayHex = isLight ? "#ffffff" : "#1a1714";
+  } else {
+    displayHex = value;
+  }
+
+  const handleColorChange = (newHex: string) => {
+    if (alpha !== null) {
+      // Preserve original alpha (e.g., grid lines stay subtle)
+      const r = parseInt(newHex.slice(1, 3), 16);
+      const g = parseInt(newHex.slice(3, 5), 16);
+      const b = parseInt(newHex.slice(5, 7), 16);
+      onChange(`rgba(${r},${g},${b},${alpha})`);
+    } else {
+      onChange(newHex);
+    }
+  };
+
   return (
     <SettingsRow label={label} isLight={isLight}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1855,7 +1920,7 @@ function SettingsColorRow({ label, value, onChange, isLight }: {
             height: 28,
             borderRadius: 6,
             border: `1px solid ${isLight ? "rgba(0,0,0,0.15)" : "rgba(236,227,213,0.15)"}`,
-            background: displayValue,
+            background: displayHex,
             position: "relative",
             overflow: "hidden",
             cursor: "pointer",
@@ -1863,8 +1928,8 @@ function SettingsColorRow({ label, value, onChange, isLight }: {
         >
           <input
             type="color"
-            value={displayValue}
-            onChange={e => onChange(e.target.value)}
+            value={displayHex}
+            onChange={e => handleColorChange(e.target.value)}
             onClick={e => e.stopPropagation()}
             style={{
               position: "absolute",
@@ -1886,7 +1951,7 @@ function SettingsColorRow({ label, value, onChange, isLight }: {
           minWidth: 58,
           textTransform: "uppercase",
         }}>
-          {displayValue}
+          {displayHex}
         </span>
       </div>
     </SettingsRow>

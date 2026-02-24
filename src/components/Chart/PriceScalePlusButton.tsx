@@ -74,17 +74,11 @@ export default function PriceScalePlusButton({
 
     const handleMouseMove = (e: MouseEvent) => {
       const rect = container.getBoundingClientRect();
-      const localX = e.clientX - rect.left;
       const localY = e.clientY - rect.top;
-      const containerWidth = rect.width;
 
-      const inPriceScale = localX >= containerWidth - PRICE_SCALE_WIDTH;
-
-      setIsInPriceScale(inPriceScale);
-
-      if (inPriceScale) {
-        setCursorY(localY);
-      }
+      // Show the + button whenever the cursor is anywhere on the chart
+      setIsInPriceScale(true);
+      setCursorY(localY);
     };
 
     const handleMouseLeave = () => {

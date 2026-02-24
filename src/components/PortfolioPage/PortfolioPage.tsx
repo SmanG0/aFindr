@@ -49,10 +49,12 @@ export default function PortfolioPage({ accountState, currentPrice, onNavigateTo
               accountState={accountState}
               onSelectTicker={handleSelectTicker}
             />
-            <WatchlistSidebar
-              positions={accountState.positions}
-              onSelectTicker={handleSelectTicker}
-            />
+            {/* Right column: padded so the card floats with margin */}
+            <div style={{ padding: 16, flexShrink: 0 }}>
+              <WatchlistSidebar
+                onSelectTicker={handleSelectTicker}
+              />
+            </div>
           </motion.div>
         ) : (
           /* ─── Stock Detail View: Detail Content + Order Panel ─── */
@@ -70,12 +72,15 @@ export default function PortfolioPage({ accountState, currentPrice, onNavigateTo
               onSelectTicker={handleSelectTicker}
               onNavigateToChart={onNavigateToChart}
             />
-            <OrderPanel
-              ticker={selectedTicker}
-              name={detailName}
-              price={detailPrice || currentPrice}
-              balance={accountState.balance}
-            />
+            {/* Right column: padded so the card floats with margin */}
+            <div style={{ padding: 16, flexShrink: 0 }}>
+              <OrderPanel
+                ticker={selectedTicker}
+                name={detailName}
+                price={detailPrice || currentPrice}
+                balance={accountState.balance}
+              />
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

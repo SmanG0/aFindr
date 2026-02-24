@@ -9,6 +9,7 @@ interface RiskManagementProps {
   onClose: () => void;
   settings: RiskSettings;
   onUpdateSettings: (settings: RiskSettings) => void;
+  embedded?: boolean;
 }
 
 export default function RiskManagement({
@@ -16,6 +17,7 @@ export default function RiskManagement({
   onClose,
   settings,
   onUpdateSettings,
+  embedded,
 }: RiskManagementProps) {
   const [localSettings, setLocalSettings] = useState<RiskSettings>(settings);
   const [symbolInput, setSymbolInput] = useState("");
@@ -70,71 +72,56 @@ export default function RiskManagement({
     outline: "none",
   };
 
-  return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          className="modal-overlay"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
-          onClick={onClose}
-        >
-          <motion.div
-            className="modal-content"
-            initial={{ opacity: 0, scale: 0.96, y: 10 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: 10 }}
-            transition={{ duration: 0.2 }}
-            onClick={(e) => e.stopPropagation()}
+  // ─── Shared form content ───
+  const formContent = (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 24,
+        }}
+      >
+        <span className="gradient-title">Risk Management</span>
+        {!embedded && (
+          <button
+            onClick={onClose}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              padding: 4,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 6,
+              transition: "color 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = "var(--text-primary)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = "var(--text-muted)";
+            }}
           >
-            {/* ─── Header ─── */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 24,
-              }}
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
             >
-              <span className="gradient-title">Risk Management</span>
-              <button
-                onClick={onClose}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--text-muted)",
-                  cursor: "pointer",
-                  padding: 4,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  borderRadius: 6,
-                  transition: "color 0.15s ease",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.color = "var(--text-primary)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.color = "var(--text-muted)";
-                }}
-              >
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        )}
+      </div>
 
             {/* ─── Form Fields ─── */}
             <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -495,6 +482,38 @@ export default function RiskManagement({
             >
               Save Settings
             </button>
+    </>
+  );
+
+  // Embedded mode: render inline without modal overlay
+  if (embedded) {
+    return (
+      <div style={{ padding: "24px 32px", maxWidth: 560 }}>
+        {formContent}
+      </div>
+    );
+  }
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          className="modal-overlay"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2 }}
+          onClick={onClose}
+        >
+          <motion.div
+            className="modal-content"
+            initial={{ opacity: 0, scale: 0.96, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.96, y: 10 }}
+            transition={{ duration: 0.2 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {formContent}
           </motion.div>
         </motion.div>
       )}

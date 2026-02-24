@@ -4,6 +4,7 @@ export type SettingsSection =
   | "general"
   | "appearance"
   | "trading"
+  | "risk"
   | "account"
   | "apis"
   | "broker-logins";
@@ -12,6 +13,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
   { id: "appearance", label: "Appearance" },
   { id: "trading", label: "Trading" },
+  { id: "risk", label: "Risk Management" },
   { id: "account", label: "Account" },
   { id: "apis", label: "APIs & Data" },
   { id: "broker-logins", label: "Broker Logins" },

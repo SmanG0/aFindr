@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ChatMessage, Trade } from "@/lib/types";
+import type { ToolEvent } from "@/hooks/useAgentStream";
 
 interface CopilotOverlayProps {
   isOpen: boolean;
@@ -11,6 +12,10 @@ interface CopilotOverlayProps {
   onSendMessage: (message: string) => void;
   isLoading: boolean;
   symbol: string;
+  streamingText?: string;
+  toolEvents?: ToolEvent[];
+  isAgentStreaming?: boolean;
+  agentError?: string | null;
 }
 
 function getGreeting(): string {
@@ -146,16 +151,184 @@ function BacktestResultBlock({ result }: { result: NonNullable<ChatMessage["stra
   );
 }
 
+// ─── Friendly tool name labels ───
+const TOOL_LABELS: Record<string, string> = {
+  run_backtest: "Running backtest",
+  generate_strategy: "Generating strategy",
+  generate_pinescript: "Writing PineScript",
+  fetch_market_data: "Fetching market data",
+  run_monte_carlo: "Running Monte Carlo simulation",
+  run_walk_forward: "Running walk-forward analysis",
+  analyze_trades: "Analyzing trades",
+  optimize_parameters: "Optimizing parameters",
+  search_rag: "Searching knowledge base",
+  validate_strategy_code: "Validating strategy",
+  execute_strategy_code: "Executing strategy",
+  fetch_options_chain: "Fetching options chain",
+  fetch_insider_activity: "Checking insider activity",
+  fetch_economic_data: "Fetching economic data",
+  fetch_earnings_calendar: "Checking earnings calendar",
+  fetch_company_news_feed: "Fetching company news",
+  search_news: "Searching news",
+  get_stock_info: "Looking up stock info",
+  fetch_news: "Fetching news feed",
+};
+
+// ─── Rotating thinking phrases ───
+const THINKING_PHRASES = [
+  "Thinking",
+  "Analyzing",
+  "Processing",
+  "Discombobulating",
+  "Crunching numbers",
+  "Consulting the charts",
+  "Reading the tape",
+  "Synthesizing",
+];
+
+function useRotatingPhrase(active: boolean) {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    setIndex(Math.floor(Math.random() * THINKING_PHRASES.length));
+    const timer = setInterval(() => {
+      setIndex((prev) => (prev + 1) % THINKING_PHRASES.length);
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [active]);
+  return THINKING_PHRASES[index];
+}
+
+/** Claude/Cursor-style collapsible tool steps */
+function ToolStepsDropdown({ toolEvents }: { toolEvents: ToolEvent[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const activeTools = toolEvents.filter((t) => t.status === "running");
+  const completedTools = toolEvents.filter((t) => t.status !== "running");
+  const latestActive = activeTools[activeTools.length - 1];
+
+  // Summary label: show active tool or completed count
+  const summaryLabel = latestActive
+    ? TOOL_LABELS[latestActive.tool_name] || latestActive.tool_name.replace(/_/g, " ")
+    : `${completedTools.length} step${completedTools.length !== 1 ? "s" : ""} completed`;
+
+  return (
+    <div style={{ marginBottom: 4 }}>
+      {/* Summary row (always visible) */}
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        style={{
+          display: "flex", alignItems: "center", gap: 6, width: "100%",
+          padding: "4px 0", background: "none", border: "none", cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        {/* Spinner or chevron */}
+        {latestActive ? (
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+            style={{ width: 12, height: 12, flexShrink: 0 }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5">
+              <path d="M21 12a9 9 0 1 1-6.22-8.56" />
+            </svg>
+          </motion.div>
+        ) : (
+          <svg
+            width="12" height="12" viewBox="0 0 24 24" fill="none"
+            stroke="var(--text-muted)" strokeWidth="2"
+            style={{ flexShrink: 0, transform: expanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 150ms ease" }}
+          >
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        )}
+
+        <span style={{
+          fontSize: 12, color: latestActive ? "var(--text-secondary)" : "var(--text-muted)",
+          fontWeight: 500, flex: 1,
+        }}>
+          {summaryLabel}{latestActive ? "..." : ""}
+        </span>
+
+        {/* Step count badge */}
+        {toolEvents.length > 1 && (
+          <span style={{
+            fontSize: 10, color: "var(--text-disabled)",
+            fontFamily: "var(--font-mono)",
+          }}>
+            {completedTools.length}/{toolEvents.length}
+          </span>
+        )}
+      </button>
+
+      {/* Expanded detail list */}
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            style={{ overflow: "hidden", paddingLeft: 18 }}
+          >
+            {toolEvents.map((te) => {
+              const label = TOOL_LABELS[te.tool_name] || te.tool_name.replace(/_/g, " ");
+              const isRunning = te.status === "running";
+              const isDone = te.status === "success";
+              return (
+                <div
+                  key={te.id}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    padding: "3px 0", fontSize: 11,
+                    color: isRunning ? "var(--text-secondary)" : "var(--text-muted)",
+                  }}
+                >
+                  {isRunning ? (
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                      style={{ width: 10, height: 10, flexShrink: 0 }}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5">
+                        <path d="M21 12a9 9 0 1 1-6.22-8.56" />
+                      </svg>
+                    </motion.div>
+                  ) : isDone ? (
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--buy)" strokeWidth="2.5" style={{ flexShrink: 0 }}>
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  ) : (
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--sell)" strokeWidth="2.5" style={{ flexShrink: 0 }}>
+                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  )}
+                  <span>{label}</span>
+                </div>
+              );
+            })}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 export default function CopilotOverlay({
   isOpen,
   onClose,
   messages,
   onSendMessage,
   isLoading,
+  streamingText = "",
+  toolEvents = [],
+  isAgentStreaming = false,
+  agentError = null,
 }: CopilotOverlayProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const thinkingPhrase = useRotatingPhrase(isLoading && !streamingText && toolEvents.length === 0);
 
   useEffect(() => {
     if (isOpen) setTimeout(() => textareaRef.current?.focus(), 200);
@@ -163,7 +336,7 @@ export default function CopilotOverlay({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading]);
+  }, [messages, isLoading, streamingText, toolEvents.length]);
 
   const handleSubmit = useCallback(() => {
     const trimmed = input.trim();
@@ -276,15 +449,67 @@ export default function CopilotOverlay({
                     </div>
                   </div>
                 ))}
+                {/* ─── Agent Error ─── */}
+                {agentError && !isLoading && (
+                  <div style={{ display: "flex", gap: 8, padding: "4px 0" }}>
+                    <div style={{ width: 24, height: 24, flexShrink: 0, marginTop: 2 }}>
+                      <AlphyMascot size={24} />
+                    </div>
+                    <div style={{
+                      fontSize: 12, lineHeight: 1.5, color: "var(--sell)",
+                      padding: "8px 12px", borderRadius: 8,
+                      background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.15)",
+                    }}>
+                      Something went wrong — {agentError}
+                    </div>
+                  </div>
+                )}
+                {/* ─── Streaming / Loading UI ─── */}
                 {isLoading && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0" }}>
-                    <AlphyMascot size={24} />
-                    <div style={{ display: "flex", gap: 4 }}>
-                      {[0, 1, 2].map((i) => (
-                        <motion.div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)" }}
-                          animate={{ opacity: [0.3, 1, 0.3], scale: [0.85, 1, 0.85] }}
-                          transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }} />
-                      ))}
+                  <div style={{ padding: "4px 0" }}>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ width: 24, height: 24, flexShrink: 0, marginTop: 2 }}>
+                        <AlphyMascot size={24} />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        {/* Collapsible tool steps (Claude/Cursor style) */}
+                        {toolEvents.length > 0 && (
+                          <ToolStepsDropdown toolEvents={toolEvents} />
+                        )}
+
+                        {/* Streaming text (live tokens) */}
+                        {streamingText ? (
+                          <div style={{
+                            fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)",
+                            whiteSpace: "pre-wrap", marginTop: toolEvents.length > 0 ? 6 : 0,
+                          }}>
+                            {streamingText}
+                            <motion.span
+                              animate={{ opacity: [1, 0] }}
+                              transition={{ duration: 0.6, repeat: Infinity }}
+                              style={{ color: "var(--accent)" }}
+                            >
+                              |
+                            </motion.span>
+                          </div>
+                        ) : toolEvents.length === 0 ? (
+                          /* Thinking indicator (before anything arrives) */
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0" }}>
+                            <AnimatePresence mode="wait">
+                              <motion.span
+                                key={thinkingPhrase}
+                                initial={{ opacity: 0, y: 4 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -4 }}
+                                transition={{ duration: 0.2 }}
+                                style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}
+                              >
+                                {thinkingPhrase}...
+                              </motion.span>
+                            </AnimatePresence>
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                 )}

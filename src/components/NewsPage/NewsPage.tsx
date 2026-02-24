@@ -195,10 +195,10 @@ export default function NewsPage({ onClose, onNavigateToChart }: NewsPageProps) 
   }, [handleArticleClick]);
 
   return (
-    <div style={{ display: "flex", width: "100%", height: "100%", overflow: "hidden", background: "var(--bg-news)" }}>
+    <div style={{ display: "flex", width: "100%", height: "100%", overflow: "hidden", background: "var(--bg)" }}>
 
       {/* ═══ MAIN CONTENT ═══ */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--bg-news)" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--bg)" }}>
 
         {selectedArticle && selectedArticle.ticker && (stockDetail || isLoadingStock) ? (
           /* ─── STOCK DETAIL VIEW ─── */
@@ -339,14 +339,14 @@ function ArticleFullView({ item, onBack, onTickerClick }: {
       display: "flex",
       flexDirection: "column",
       overflow: "hidden",
-      background: "var(--bg-news-raised)",
+      background: "var(--bg-raised)",
       minWidth: 0,
     }}>
       {/* Header bar - brown aesthetic */}
       <div style={{
         padding: "12px 20px",
         borderBottom: "1px solid var(--divider)",
-        background: "var(--bg-news)",
+        background: "var(--bg)",
         display: "flex",
         alignItems: "center",
         gap: 12,
@@ -522,12 +522,12 @@ function NewsFeedView({ news, activeCategory, onCategoryChange, isLive, onToggle
 }) {
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-news)" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg)" }}>
       {/* Search Bar */}
       <div style={{
         padding: "10px 16px", borderBottom: "1px solid var(--divider)",
         display: "flex", alignItems: "center", gap: 10,
-        background: "var(--bg-news-raised)",
+        background: "var(--bg-raised)",
       }}>
         <div style={{
           flex: 1, display: "flex", alignItems: "center", gap: 8,
@@ -571,7 +571,7 @@ function NewsFeedView({ news, activeCategory, onCategoryChange, isLive, onToggle
       <div style={{
         display: "flex", gap: 2, padding: "6px 16px",
         borderBottom: "1px solid var(--divider)", overflowX: "auto", flexShrink: 0,
-        background: "var(--bg-news-raised)",
+        background: "var(--bg-raised)",
       }}>
         {NEWS_CATEGORIES.map(cat => (
           <button
@@ -592,7 +592,7 @@ function NewsFeedView({ news, activeCategory, onCategoryChange, isLive, onToggle
       </div>
 
       {/* News List */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "4px 0", background: "var(--bg-news)" }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "4px 0", background: "var(--bg)" }}>
         <AnimatePresence mode="popLayout">
           {news.map((item, i) => {
             const isViewing = viewingArticleId === item.id;
@@ -652,7 +652,7 @@ function NewsFeedView({ news, activeCategory, onCategoryChange, isLive, onToggle
                   marginBottom: 4, fontSize: 13, lineHeight: 1.45, color: "var(--text-primary)",
                   fontWeight: 500, display: "flex", alignItems: "flex-start", gap: 8,
                 }}>
-                  <span style={{ flex: 1, minWidth: 0 }}>{item.title}</span>
+                  <span style={{ flex: 1, minWidth: 0 }} data-news-headline={item.title}>{item.title}</span>
                   {item.url && (
                     <svg width="14" height="14" style={{ flexShrink: 0, opacity: 0.5, marginTop: 2 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M9 18l6-6-6-6" />
@@ -721,9 +721,9 @@ function StockDetailView({ article, detail, activeDetailTab, activeContentTab, o
   onNavigateToChart?: (ticker: string) => void;
 }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg-news)" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: "var(--bg)" }}>
       {/* Header: Back + Ticker info */}
-      <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--divider)", flexShrink: 0, background: "var(--bg-news-raised)" }}>
+      <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--divider)", flexShrink: 0, background: "var(--bg-raised)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
           <button
             onClick={onBack}
@@ -854,7 +854,7 @@ function StockDetailView({ article, detail, activeDetailTab, activeContentTab, o
       </div>
 
       {/* Main content area */}
-      <div style={{ flex: 1, overflowY: "auto", display: "flex", background: "var(--bg-news)" }}>
+      <div style={{ flex: 1, overflowY: "auto", display: "flex", background: "var(--bg)" }}>
         {/* Left: Chart + Stats */}
         <div style={{ flex: 1, padding: 20, minWidth: 0 }}>
 

@@ -93,21 +93,31 @@ function ToolGroupButton({
     return () => window.removeEventListener("keydown", handleKey);
   }, [open]);
 
-  const handleMainClick = useCallback(() => {
+  const handleMainClick = useCallback((e: React.MouseEvent) => {
     if (!hasMultiple) {
       onToolSelect(activeTool.id);
       return;
     }
-    if (isGroupActive) {
+
+    // Check if click is in the corner area (bottom-right 12x12px) — opens dropdown
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const localX = e.clientX - rect.left;
+    const localY = e.clientY - rect.top;
+    const isCorner = localX > rect.width - 14 && localY > rect.height - 14;
+
+    if (isCorner) {
+      // Corner click → toggle dropdown
       if (open) {
         setOpen(false);
       } else {
         openDropdown();
       }
     } else {
+      // Center click → select tool directly, close dropdown if open
       onToolSelect(activeTool.id);
+      if (open) setOpen(false);
     }
-  }, [activeTool.id, hasMultiple, isGroupActive, onToolSelect, open, openDropdown]);
+  }, [activeTool.id, hasMultiple, onToolSelect, open, openDropdown]);
 
   const handleArrowClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -150,16 +160,24 @@ function ToolGroupButton({
             onClick={handleArrowClick}
             style={{
               position: "absolute",
-              bottom: 2,
-              right: 2,
+              bottom: 0,
+              right: 0,
+              width: 14,
+              height: 14,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+            }}
+          >
+            <span style={{
               width: 0,
               height: 0,
               borderLeft: "3px solid transparent",
               borderRight: "3px solid transparent",
-              borderTop: "3px solid rgba(236,227,213,0.35)",
-              cursor: "pointer",
-            }}
-          />
+              borderTop: "3px solid rgba(236,227,213,0.45)",
+            }} />
+          </span>
         )}
       </button>
 

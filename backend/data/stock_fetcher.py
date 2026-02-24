@@ -450,6 +450,88 @@ def fetch_stock_detail_full(ticker: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def fetch_stock_news(ticker: str, limit: int = 15) -> Dict[str, Any]:
+    """Fetch recent news for a ticker via yfinance.
+
+    Returns headlines, publisher, link, and publish time.
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        news = stock.news
+        if not news:
+            return {"ticker": ticker, "news": [], "newsCount": 0}
+
+        articles = []
+        for item in news[:limit]:
+            articles.append({
+                "headline": item.get("title", ""),
+                "source": item.get("publisher", ""),
+                "url": item.get("link", ""),
+                "datetime": item.get("providerPublishTime"),
+                "summary": "",
+                "related": ticker.upper(),
+            })
+
+        return {
+            "ticker": ticker,
+            "newsCount": len(articles),
+            "news": articles,
+            "source": "yfinance",
+        }
+    except Exception:
+        return {"ticker": ticker, "news": [], "newsCount": 0}
+
+
+def fetch_earnings_dates_free(ticker: str) -> Dict[str, Any]:
+    """Fetch upcoming and recent earnings dates via yfinance.
+
+    Free fallback when Finnhub is unavailable.
+    """
+    try:
+        import datetime as dt
+        stock = yf.Ticker(ticker)
+        ed = stock.earnings_dates
+
+        if ed is None or ed.empty:
+            return {"ticker": ticker, "earnings": [], "earningsCount": 0, "source": "yfinance"}
+
+        now = dt.datetime.now(tz=dt.timezone.utc)
+        earnings = []
+
+        for idx, row in ed.iterrows():
+            eps_estimate = _safe_float(row.get("EPS Estimate"))
+            eps_actual = _safe_float(row.get("Reported EPS"))
+            surprise_pct = _safe_float(row.get("Surprise(%)"))
+
+            month = idx.month if hasattr(idx, "month") else 0
+            year = idx.year if hasattr(idx, "year") else 0
+            q_num = (month - 1) // 3 + 1
+
+            earnings.append({
+                "date": str(idx.strftime("%Y-%m-%d")) if hasattr(idx, "strftime") else str(idx)[:10],
+                "epsEstimate": round(eps_estimate, 2) if eps_estimate is not None else None,
+                "epsActual": round(eps_actual, 2) if eps_actual is not None else None,
+                "surprisePct": round(surprise_pct, 2) if surprise_pct is not None else None,
+                "quarter": f"Q{q_num}" if q_num else None,
+                "year": year or None,
+                "symbol": ticker.upper(),
+            })
+
+        # Find next earnings date
+        future = [e for e in earnings if e["date"] > now.strftime("%Y-%m-%d")]
+        next_date = future[0]["date"] if future else None
+
+        return {
+            "ticker": ticker,
+            "earningsCount": len(earnings),
+            "earnings": earnings[:12],
+            "nextEarningsDate": next_date,
+            "source": "yfinance",
+        }
+    except Exception:
+        return {"ticker": ticker, "earnings": [], "earningsCount": 0, "source": "yfinance"}
+
+
 def _get_sector_peers(ticker: str, sector: Optional[str], industry: Optional[str]) -> list[str]:
     """Get peer tickers based on sector/industry."""
     # Curated peer lists for common sectors

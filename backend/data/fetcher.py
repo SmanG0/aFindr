@@ -150,19 +150,114 @@ def _trim_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
     return df[df.index >= start]
 
 
-async def fetch_ohlcv(
+async def _fetch_yfinance_ohlcv(
     symbol: str,
     period: str = "1y",
     interval: str = "1d",
 ) -> pd.DataFrame:
-    """Fetch OHLCV data from local Databento CSV files.
+    """Fetch OHLCV data from Yahoo Finance (free, works for any ticker).
+
+    yfinance period values: 1d,5d,1mo,3mo,6mo,1y,2y,5y,10y,max
+    yfinance interval values: 1m,2m,5m,15m,30m,60m,90m,1h,1d,5d,1wk,1mo,3mo
+    """
+    import yfinance as yf
+
+    # Map our period strings to yfinance format
+    yf_period_map = {
+        "1d": "1d",
+        "5d": "5d",
+        "1mo": "1mo",
+        "3mo": "3mo",
+        "6mo": "6mo",
+        "60d": "3mo",
+        "1y": "1y",
+        "2y": "2y",
+        "5y": "5y",
+        "max": "max",
+    }
+
+    # Map our interval strings to yfinance format
+    yf_interval_map = {
+        "1m": "1m",
+        "3m": "5m",     # yfinance doesn't have 3m, use 5m
+        "5m": "5m",
+        "15m": "15m",
+        "30m": "30m",
+        "1h": "1h",
+        "4h": "1h",     # yfinance doesn't have 4h, use 1h and resample
+        "1d": "1d",
+        "1wk": "1wk",
+    }
+
+    yf_period = yf_period_map.get(period, "1y")
+    yf_interval = yf_interval_map.get(interval, "1d")
+
+    # yfinance limits: intraday data only available for shorter periods
+    # 1m: max 7d, 5m/15m/30m: max 60d, 1h: max 730d
+    if yf_interval in ("1m",) and yf_period not in ("1d", "5d"):
+        yf_period = "5d"
+    elif yf_interval in ("5m", "15m", "30m") and yf_period not in ("1d", "5d", "1mo", "3mo"):
+        yf_period = "3mo"
+
+    ticker = yf.Ticker(symbol)
+    df = ticker.history(period=yf_period, interval=yf_interval)
+
+    if df.empty:
+        raise ValueError(f"No data returned from Yahoo Finance for '{symbol}'")
+
+    # Normalize column names to lowercase
+    df.columns = [c.lower() for c in df.columns]
+
+    # Keep only OHLCV columns
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col not in df.columns:
+            raise ValueError(f"Missing column '{col}' in Yahoo Finance data for '{symbol}'")
+
+    df = df[["open", "high", "low", "close", "volume"]]
+    df.index.name = "timestamp"
+
+    # Resample to 4h if requested (yfinance only goes up to 1h)
+    if interval == "4h" and yf_interval == "1h":
+        df = df.resample("4h").agg({
+            "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
+        }).dropna(subset=["open"])
+
+    return df
+
+
+async def fetch_ohlcv(
+    symbol: str,
+    period: str = "1y",
+    interval: str = "1d",
+    source: str = "auto",
+) -> pd.DataFrame:
+    """Fetch OHLCV data from available sources.
+
+    Sources:
+    - "databento": Local Databento CSV files (futures)
+    - "polygon": Polygon.io REST API (stocks + futures)
+    - "auto": Try Databento first, fall back to Polygon
 
     Loads 1-minute data and resamples to the requested interval.
     Period parameter is used to trim the date range.
     """
+    # Try Polygon for stock tickers or when explicitly requested
+    if source == "polygon" or (source == "auto" and symbol not in SYMBOL_PREFIX):
+        try:
+            from data.polygon_fetcher import fetch_polygon_ohlcv, is_available
+            if is_available():
+                return await fetch_polygon_ohlcv(symbol, period, interval)
+        except (ImportError, Exception):
+            pass
+
+    # Try yfinance as a universal fallback for any ticker (stocks, ETFs, indices)
+    if source == "yfinance" or (source == "auto" and symbol not in SYMBOL_PREFIX):
+        return await _fetch_yfinance_ohlcv(symbol, period, interval)
+
     prefix = SYMBOL_PREFIX.get(symbol)
     if not prefix:
-        raise ValueError(f"No Databento data mapping for symbol '{symbol}'")
+        # Last resort: try yfinance for unknown symbols
+        return await _fetch_yfinance_ohlcv(symbol, period, interval)
 
     raw = _load_symbol_data(prefix)
     trimmed = _trim_by_period(raw, period)

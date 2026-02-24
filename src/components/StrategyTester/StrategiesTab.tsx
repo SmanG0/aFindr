@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { fetchStrategies, fetchStrategy } from "@/lib/api";
+import { fetchStrategies, rerunStrategy } from "@/lib/api";
 import type { StrategySummary } from "@/lib/api";
 
 interface StrategiesTabProps {
@@ -23,7 +23,7 @@ export default function StrategiesTab({ onLoadStrategy }: StrategiesTabProps) {
   const handleLoad = useCallback(async (filename: string) => {
     setLoadingFile(filename);
     try {
-      const data = await fetchStrategy(filename);
+      const data = await rerunStrategy(filename);
       onLoadStrategy(data);
     } catch (err) {
       console.error("Failed to load strategy:", err);

@@ -50,9 +50,15 @@ backend/.next/
 # large data files
 backend/data/databento/*_tick_*.csv
 
+# SQLite database
+backend/data/afindr.db
+backend/data/afindr.db-wal
+backend/data/afindr.db-shm
+
 # debug logs
 firebase-debug.log
 backend/.env
 
 # worktrees
 .worktrees/
+backend/strategy_versions/

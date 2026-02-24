@@ -10,23 +10,31 @@ function formatTime(timestamp: number): string {
   return d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-function AlphyMascotSmall({ size = 34 }: { size?: number }) {
+function AlphyMascot({ size = 34 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 64 64" fill="none">
+      {/* Body */}
       <ellipse cx="32" cy="36" rx="18" ry="20" fill="var(--accent)" />
-      <ellipse cx="32" cy="40" rx="12" ry="13" fill="var(--accent-bright)" opacity="0.3" />
+      {/* Belly glow */}
+      <ellipse cx="32" cy="40" rx="12" ry="13" fill="var(--accent-bright)" opacity="0.25" />
+      {/* Left eye */}
       <ellipse cx="25" cy="29" rx="4" ry="4.5" fill="var(--text-primary)" />
       <ellipse cx="26" cy="29.5" rx="2" ry="2.5" fill="var(--bg)" />
-      <circle cx="24.5" cy="28" r="1" fill="var(--text-primary)" />
+      <circle cx="24.5" cy="28" r="1.2" fill="var(--text-primary)" />
+      {/* Right eye */}
       <ellipse cx="39" cy="29" rx="4" ry="4.5" fill="var(--text-primary)" />
       <ellipse cx="40" cy="29.5" rx="2" ry="2.5" fill="var(--bg)" />
-      <circle cx="38.5" cy="28" r="1" fill="var(--text-primary)" />
-      <path d="M20 24 Q25 21 29 24" stroke="var(--bg-overlay)" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-      <path d="M35 24 Q39 21 44 24" stroke="var(--bg-overlay)" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+      <circle cx="38.5" cy="28" r="1.2" fill="var(--text-primary)" />
+      {/* Eyebrows */}
+      <path d="M20 24 Q25 21 29 24" stroke="var(--bg)" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+      <path d="M35 24 Q39 21 44 24" stroke="var(--bg)" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+      {/* Smile */}
       <path d="M26 38 Q32 43 38 38" stroke="var(--text-primary)" strokeWidth="1.8" fill="none" strokeLinecap="round" />
+      {/* Cheek blush */}
       <circle cx="21" cy="34" r="3" fill="var(--accent-bright)" opacity="0.35" />
       <circle cx="43" cy="34" r="3" fill="var(--accent-bright)" opacity="0.35" />
-      <text x="32" y="21" textAnchor="middle" fontSize="10" fontWeight="bold" fill="var(--text-primary)" fontFamily="Georgia, serif" opacity="0.7">α</text>
+      {/* Alpha crown */}
+      <text x="32" y="21" textAnchor="middle" fontSize="10" fontWeight="bold" fill="var(--text-primary)" fontFamily="Georgia, serif" opacity="0.7">&#x3B1;</text>
     </svg>
   );
 }
@@ -38,6 +46,7 @@ interface Navbar1Props {
   onOpenRiskMgmt: () => void;
   onOpenSymbols: () => void;
   onOpenSettings: () => void;
+  userName?: string;
 }
 
 // Main nav tabs — Settings is NOT a tab, only accessible via gear icon
@@ -46,22 +55,29 @@ const NAV_TABS: { id: AppPage; label: string }[] = ([
   { id: "portfolio", label: "Portfolio" },
   { id: "trade", label: "Trade" },
   { id: "news", label: "News" },
+  { id: "alpha", label: "Alpha Lab" },
 ] as { id: AppPage; label: string }[]).filter((t) => t.id !== "settings");
 
 export default function Navbar1({
   activePage,
   onPageChange,
   onOpenCopilot,
-  onOpenRiskMgmt,
+  onOpenRiskMgmt: _onOpenRiskMgmt,
   onOpenSymbols,
   onOpenSettings,
+  userName,
 }: Navbar1Props) {
+  void _onOpenRiskMgmt;
   const [showNotifications, setShowNotifications] = useState(false);
-  const [mascotHovered, setMascotHovered] = useState(false);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [logoHovered, setLogoHovered] = useState(false);
   const [notifications] = useState([
     { id: 1, type: "trade" as const, message: "Trading engine initialized", time: Date.now() - 60000 },
     { id: 2, type: "system" as const, message: "Connected to data feed", time: Date.now() - 30000 },
   ]);
+
+  const displayName = userName || "User";
+  const initials = displayName.charAt(0).toUpperCase();
 
   return (
     <>
@@ -77,43 +93,31 @@ export default function Navbar1({
           flexShrink: 0,
         }}
       >
-        {/* ─── Alphy Mascot Button (Clippy-inspired) ─── */}
+        {/* ─── Alphy Mascot (left corner) ─── */}
         <motion.button
           onClick={onOpenCopilot}
-          onMouseEnter={() => setMascotHovered(true)}
-          onMouseLeave={() => setMascotHovered(false)}
+          onMouseEnter={() => setLogoHovered(true)}
+          onMouseLeave={() => setLogoHovered(false)}
           whileTap={{ scale: 0.92 }}
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 6,
-            marginRight: 20,
-            padding: "3px 10px 3px 3px",
-            borderRadius: 20,
-            background: mascotHovered ? "rgba(196,123,58,0.14)" : "transparent",
-            border: mascotHovered ? "1px solid rgba(196,123,58,0.25)" : "1px solid transparent",
+            justifyContent: "center",
+            padding: 0,
+            marginRight: 16,
+            background: "transparent",
+            border: "none",
             cursor: "pointer",
             flexShrink: 0,
-            transition: "background 150ms ease, border-color 150ms ease",
           }}
+          title="Open Alphy"
         >
           <motion.div
-            animate={mascotHovered ? { rotate: [0, -6, 6, -3, 0], y: [0, -2, 0] } : { rotate: 0, y: 0 }}
-            transition={{ duration: 0.5, ease: "easeInOut" }}
+            animate={logoHovered ? { scale: 1.12, rotate: 3 } : { scale: 1, rotate: 0 }}
+            transition={{ type: "spring", stiffness: 400, damping: 20 }}
           >
-            <AlphyMascotSmall size={34} />
+            <AlphyMascot size={36} />
           </motion.div>
-          <span
-            style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: mascotHovered ? "var(--accent-bright)" : "var(--text-secondary)",
-              letterSpacing: "-0.01em",
-              transition: "color 150ms ease",
-            }}
-          >
-            Alphy
-          </span>
         </motion.button>
 
         {/* ─── Main Navigation Tabs ─── */}
@@ -194,17 +198,6 @@ export default function Navbar1({
           {/* Divider */}
           <div style={{ width: 1, height: 20, background: "rgba(236,227,213,0.08)", flexShrink: 0, margin: "0 4px" }} />
 
-          {/* Risk Management */}
-          <IconButton
-            onClick={onOpenRiskMgmt}
-            title="Risk Management"
-            icon={
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              </svg>
-            }
-          />
-
           {/* News */}
           <IconButton
             onClick={() => onPageChange("news")}
@@ -260,6 +253,36 @@ export default function Navbar1({
               </svg>
             }
           />
+
+          {/* Divider */}
+          <div style={{ width: 1, height: 20, background: "rgba(236,227,213,0.08)", flexShrink: 0, margin: "0 4px" }} />
+
+          {/* Profile Avatar */}
+          <div style={{ position: "relative" }}>
+            <motion.button
+              onClick={() => setShowProfileMenu(!showProfileMenu)}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 32,
+                height: 32,
+                borderRadius: "50%",
+                background: "linear-gradient(135deg, var(--accent), var(--accent-bright))",
+                border: showProfileMenu ? "2px solid var(--accent-bright)" : "2px solid transparent",
+                cursor: "pointer",
+                fontSize: 13,
+                fontWeight: 700,
+                color: "#fff",
+                transition: "border-color 150ms ease",
+              }}
+              title={displayName}
+            >
+              {initials}
+            </motion.button>
+          </div>
         </div>
       </nav>
 
@@ -269,6 +292,23 @@ export default function Navbar1({
           <NotificationsDropdown
             notifications={notifications}
             onClose={() => setShowNotifications(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ═══ Profile Dropdown ═══ */}
+      <AnimatePresence>
+        {showProfileMenu && (
+          <ProfileDropdown
+            name={displayName}
+            onClose={() => setShowProfileMenu(false)}
+            onSettings={() => { setShowProfileMenu(false); onOpenSettings(); }}
+            onLogout={() => {
+              localStorage.removeItem("afindr_onboarding");
+              localStorage.removeItem("afindr_onboarding_welcomed");
+              localStorage.removeItem("afindr_current_page");
+              window.location.replace("/landing");
+            }}
           />
         )}
       </AnimatePresence>
@@ -370,5 +410,116 @@ function NotificationsDropdown({
         ))
       )}
     </motion.div>
+  );
+}
+
+// ─── Profile Dropdown ───
+function ProfileDropdown({
+  name,
+  onClose,
+  onSettings,
+  onLogout,
+}: {
+  name: string;
+  onClose: () => void;
+  onSettings: () => void;
+  onLogout: () => void;
+}) {
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        style={{ position: "fixed", inset: 0, zIndex: 999 }}
+      />
+      <motion.div
+        initial={{ opacity: 0, y: -8, scale: 0.95 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -8, scale: 0.95 }}
+        transition={{ duration: 0.15 }}
+        style={{
+          position: "fixed",
+          top: 52,
+          right: 16,
+          zIndex: 1000,
+          background: "rgba(33,30,26,0.98)",
+          border: "1px solid rgba(236,227,213,0.1)",
+          borderRadius: 12,
+          padding: 8,
+          width: 220,
+          backdropFilter: "blur(20px)",
+          boxShadow: "0 16px 48px rgba(15,12,8,0.6)",
+        }}
+      >
+        {/* User info */}
+        <div style={{ padding: "8px 12px 12px", borderBottom: "1px solid rgba(236,227,213,0.06)" }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{name}</div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Free Plan</div>
+        </div>
+
+        {/* Menu items */}
+        <div style={{ padding: "4px 0" }}>
+          <ProfileMenuItem
+            icon={
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            }
+            label="Settings"
+            onClick={onSettings}
+          />
+          <ProfileMenuItem
+            icon={
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            }
+            label="Sign Out"
+            onClick={onLogout}
+            danger
+          />
+        </div>
+      </motion.div>
+    </>
+  );
+}
+
+function ProfileMenuItem({
+  icon,
+  label,
+  onClick,
+  danger,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        width: "100%",
+        padding: "8px 12px",
+        borderRadius: 8,
+        background: "transparent",
+        border: "none",
+        color: danger ? "var(--sell)" : "var(--text-secondary)",
+        fontSize: 13,
+        cursor: "pointer",
+        transition: "background 100ms ease",
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(236,227,213,0.06)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

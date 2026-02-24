@@ -38,15 +38,17 @@ export default function OrderPanel({ ticker, name, price, balance }: OrderPanelP
     <div
       style={{
         width: 280,
-        padding: 20,
-        background: "var(--bg-raised)",
-        borderLeft: "1px solid var(--glass-border)",
+        borderRadius: 16,
+        background: "rgba(24,22,18,0.92)",
+        backdropFilter: "blur(20px)",
+        border: "1px solid rgba(236,227,213,0.12)",
+        boxShadow: "0 16px 48px rgba(0,0,0,0.4), 0 0 0 1px rgba(236,227,213,0.06)",
         display: "flex",
         flexDirection: "column",
         gap: 20,
-        flexShrink: 0,
-        height: "100%",
+        padding: 20,
         overflowY: "auto",
+        alignSelf: "flex-start",
       }}
     >
       {/* Ticker Header */}

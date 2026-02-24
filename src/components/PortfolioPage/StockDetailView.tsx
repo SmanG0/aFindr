@@ -5,6 +5,18 @@ import type { StockDetailFull, ChartDataPoint, NewsArticle } from "@/lib/api";
 import { fetchStockDetailFull, fetchStockChart, fetchNewsFeed } from "@/lib/api";
 import { formatCurrency, formatPercent } from "@/lib/portfolio-utils";
 
+interface StockThesis {
+  ticker: string;
+  sentiment: "bullish" | "bearish" | "neutral";
+  thesis: string;
+  targetPrice?: number;
+  timeframe?: string;
+  catalysts: string[];
+  risks: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
 interface StockDetailViewProps {
   ticker: string;
   onBack: () => void;
@@ -210,6 +222,66 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
   const [showFullDescription, setShowFullDescription] = useState(false);
   const [news, setNews] = useState<NewsArticle[]>([]);
 
+  // ─── Thesis state ───
+  const [thesis, setThesis] = useState<StockThesis | null>(null);
+  const [thesisEditing, setThesisEditing] = useState(false);
+  const [thesisDraft, setThesisDraft] = useState({ thesis: "", sentiment: "neutral" as StockThesis["sentiment"], targetPrice: "", timeframe: "", catalysts: "", risks: "" });
+  const [thesisHydrated, setThesisHydrated] = useState(false);
+
+  // Hydrate thesis from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem(`afindr_thesis_${ticker}`);
+    if (saved) {
+      try { setThesis(JSON.parse(saved)); } catch { /* ignore */ }
+    } else {
+      setThesis(null);
+    }
+    setThesisEditing(false);
+    setThesisHydrated(true);
+  }, [ticker]);
+
+  // Persist thesis to localStorage
+  useEffect(() => {
+    if (!thesisHydrated) return;
+    if (thesis) {
+      localStorage.setItem(`afindr_thesis_${ticker}`, JSON.stringify(thesis));
+    } else {
+      localStorage.removeItem(`afindr_thesis_${ticker}`);
+    }
+  }, [thesis, thesisHydrated, ticker]);
+
+  const saveThesis = useCallback(() => {
+    const now = Date.now();
+    setThesis({
+      ticker,
+      sentiment: thesisDraft.sentiment,
+      thesis: thesisDraft.thesis,
+      targetPrice: thesisDraft.targetPrice ? parseFloat(thesisDraft.targetPrice) : undefined,
+      timeframe: thesisDraft.timeframe || undefined,
+      catalysts: thesisDraft.catalysts.split(",").map(s => s.trim()).filter(Boolean),
+      risks: thesisDraft.risks.split(",").map(s => s.trim()).filter(Boolean),
+      createdAt: thesis?.createdAt || now,
+      updatedAt: now,
+    });
+    setThesisEditing(false);
+  }, [ticker, thesisDraft, thesis]);
+
+  const startEditThesis = useCallback(() => {
+    if (thesis) {
+      setThesisDraft({
+        thesis: thesis.thesis,
+        sentiment: thesis.sentiment,
+        targetPrice: thesis.targetPrice?.toString() || "",
+        timeframe: thesis.timeframe || "",
+        catalysts: thesis.catalysts.join(", "),
+        risks: thesis.risks.join(", "),
+      });
+    } else {
+      setThesisDraft({ thesis: "", sentiment: "neutral", targetPrice: "", timeframe: "", catalysts: "", risks: "" });
+    }
+    setThesisEditing(true);
+  }, [thesis]);
+
   // Hover state for interactive chart
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -293,35 +365,10 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
     return "$" + n.toLocaleString();
   };
 
-  // ─── Loading State ───
-  if (loading) {
+  // ─── Error State (only if detail failed AND no chart data) ───
+  if (error && !loading && chartData.length === 0) {
     return (
-      <div className="flex-1 overflow-y-auto" style={{ padding: "32px 40px" }}>
-        <button onClick={onBack} style={{ background: "transparent", border: "none", color: "var(--text-secondary)", cursor: "pointer", fontSize: 14, marginBottom: 24, display: "flex", alignItems: "center", gap: 6 }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6" /></svg>
-          Back
-        </button>
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ height: 28, width: 140, background: "var(--bg-surface)", borderRadius: 6, marginBottom: 8 }} />
-          <div style={{ height: 40, width: 200, background: "var(--bg-surface)", borderRadius: 6, marginBottom: 8 }} />
-          <div style={{ height: 16, width: 160, background: "var(--bg-surface)", borderRadius: 6 }} />
-        </div>
-        <div style={{ height: 200, background: "var(--bg-surface)", borderRadius: 12, marginBottom: 32 }} />
-        <div style={{ display: "flex", flexWrap: "wrap" }}>
-          {[...Array(12)].map((_, i) => (
-            <div key={i} style={{ flex: "0 0 25%", height: 48, borderBottom: "1px solid var(--glass-border)" }}>
-              <div style={{ height: 10, width: 80, background: "var(--bg-surface)", borderRadius: 4, margin: "8px 0 6px" }} />
-              <div style={{ height: 14, width: 60, background: "var(--bg-surface)", borderRadius: 4 }} />
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (error || !detail) {
-    return (
-      <div className="flex-1 overflow-y-auto" style={{ padding: "32px 40px" }}>
+      <div className="flex-1 overflow-y-auto" style={{ padding: "32px 40px", scrollbarWidth: "none" }}>
         <button onClick={onBack} style={{ background: "transparent", border: "none", color: "var(--text-secondary)", cursor: "pointer", fontSize: 14, marginBottom: 24, display: "flex", alignItems: "center", gap: 6 }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6" /></svg>
           Back
@@ -340,18 +387,30 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
     );
   }
 
+  // ─── Skeleton for fundamentals (shown inline while detail loads) ───
+  const FundamentalsSkeleton = () => (
+    <div style={{ display: "flex", flexWrap: "wrap" }}>
+      {[...Array(12)].map((_, i) => (
+        <div key={i} style={{ flex: "0 0 25%", height: 48, borderBottom: "1px solid var(--glass-border)" }}>
+          <div style={{ height: 10, width: 80, background: "var(--bg-surface)", borderRadius: 4, margin: "8px 0 6px" }} />
+          <div style={{ height: 14, width: 60, background: "var(--bg-surface)", borderRadius: 4 }} />
+        </div>
+      ))}
+    </div>
+  );
+
   const changeColor = displayChange.change >= 0 ? "var(--buy)" : "var(--sell)";
   const chartColor = chartInfo?.isPositive ? "var(--buy)" : "var(--sell)";
   const chartFillColor = chartInfo?.isPositive ? "rgba(34,171,148,0.08)" : "rgba(229,77,77,0.08)";
 
-  // Price target bar
-  const targetRange = (detail.targetHighPrice && detail.targetLowPrice) ? detail.targetHighPrice - detail.targetLowPrice : 0;
-  const currentInRange = targetRange > 0
+  // Price target bar (guarded for progressive loading)
+  const targetRange = detail ? ((detail.targetHighPrice && detail.targetLowPrice) ? detail.targetHighPrice - detail.targetLowPrice : 0) : 0;
+  const currentInRange = (detail && targetRange > 0)
     ? Math.max(0, Math.min(100, ((detail.price - (detail.targetLowPrice ?? 0)) / targetRange) * 100))
     : 50;
 
-  // Build stats grid — Robinhood-style flat 4-column
-  const keyStats: { label: string; value: string }[] = [
+  // Build stats grid — Robinhood-style flat 4-column (guarded)
+  const keyStats: { label: string; value: string }[] = detail ? [
     { label: "Market cap", value: detail.marketCap },
     { label: "P/E ratio", value: detail.peRatio },
     { label: "Dividend yield", value: detail.dividendYield },
@@ -364,10 +423,10 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
     { label: "52 Week low", value: detail.week52Low ? formatCurrency(detail.week52Low) : "-" },
     { label: "Beta", value: detail.beta },
     { label: "Short float", value: detail.shortFloat },
-  ].filter(s => hasVal(s.value));
+  ].filter(s => hasVal(s.value)) : [];
 
   return (
-    <div className="flex-1 overflow-y-auto" style={{ padding: "32px 40px" }}>
+    <div className="flex-1 overflow-y-auto" style={{ padding: "32px 40px", scrollbarWidth: "none" }}>
       {/* ─── Header ─── */}
       <div style={{ marginBottom: 20 }}>
         <button
@@ -380,7 +439,7 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
           Back
         </button>
         <h1 style={{ fontSize: 28, fontWeight: 500, color: "var(--text-primary)", margin: 0, lineHeight: 1.2 }}>
-          {detail.name}
+          {detail?.name ?? ticker}
         </h1>
       </div>
 
@@ -404,110 +463,144 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
         ref={chartContainerRef}
         onMouseMove={handleChartMouseMove}
         onMouseLeave={handleChartMouseLeave}
-        style={{ height: 220, position: "relative", marginBottom: 0, cursor: "crosshair", overflow: "hidden" }}
+        style={{ height: 220, position: "relative", marginBottom: 0, cursor: "crosshair", overflow: "visible" }}
       >
         {chartLoading ? (
           <div className="flex items-center justify-center" style={{ height: "100%", color: "var(--text-muted)", fontSize: 12, fontFamily: "var(--font-mono)" }}>
             Loading chart...
           </div>
         ) : chartInfo ? (
-          chartType === "line" ? (
-            /* ─── Line Chart ─── */
-            <svg width="100%" height="100%" viewBox={`0 0 ${chartData.length - 1} 100`} preserveAspectRatio="none" style={{ display: "block" }}>
-              {(() => {
-                const { closes, min, range } = chartInfo;
-                const linePoints = closes.map((c, i) => `${i},${100 - ((c - min) / range) * 90 - 5}`).join(" ");
-                const fillPoints = `0,100 ${linePoints} ${closes.length - 1},100`;
-                const refY = 100 - ((closes[0] - min) / range) * 90 - 5;
-                return (
-                  <>
-                    <polygon points={fillPoints} fill={chartFillColor} />
-                    <polyline points={linePoints} fill="none" stroke={chartColor} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-                    <line x1="0" y1={refY} x2={closes.length - 1} y2={refY}
-                      stroke="rgba(236,227,213,0.12)" strokeWidth="1" vectorEffect="non-scaling-stroke" strokeDasharray="4,4" />
-                  </>
-                );
-              })()}
-              {hoverIndex !== null && (
-                <>
+          <>
+            {chartType === "line" ? (
+              /* ─── Line Chart ─── */
+              <svg width="100%" height="100%" viewBox={`0 0 ${chartData.length - 1} 100`} preserveAspectRatio="none" style={{ display: "block" }}>
+                {(() => {
+                  const { closes, min, range } = chartInfo;
+                  const linePoints = closes.map((c, i) => `${i},${100 - ((c - min) / range) * 90 - 5}`).join(" ");
+                  const fillPoints = `0,100 ${linePoints} ${closes.length - 1},100`;
+                  const refY = 100 - ((closes[0] - min) / range) * 90 - 5;
+                  return (
+                    <>
+                      <polygon points={fillPoints} fill={chartFillColor} />
+                      <polyline points={linePoints} fill="none" stroke={chartColor} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+                      <line x1="0" y1={refY} x2={closes.length - 1} y2={refY}
+                        stroke="rgba(236,227,213,0.12)" strokeWidth="1" vectorEffect="non-scaling-stroke" strokeDasharray="4,4" />
+                    </>
+                  );
+                })()}
+                {hoverIndex !== null && (
                   <line x1={hoverIndex} y1="0" x2={hoverIndex} y2="100"
                     stroke="rgba(236,227,213,0.3)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
-                  <circle
-                    cx={hoverIndex}
-                    cy={100 - ((chartInfo.closes[hoverIndex] - chartInfo.min) / chartInfo.range) * 90 - 5}
-                    r="3" fill={chartColor} vectorEffect="non-scaling-stroke"
-                  />
-                </>
-              )}
-            </svg>
-          ) : (
-            /* ─── Candlestick Chart ─── */
-            <svg width="100%" height="100%" viewBox={`0 0 ${chartData.length} 100`} preserveAspectRatio="none" style={{ display: "block" }}>
-              {(() => {
-                const allHighs = chartData.map(p => p.high);
-                const allLows = chartData.map(p => p.low);
-                const candleMin = Math.min(...allLows);
-                const candleMax = Math.max(...allHighs);
-                const candleRange = candleMax - candleMin || 1;
-                const toY = (v: number) => 100 - ((v - candleMin) / candleRange) * 90 - 5;
-                const refY = toY(chartData[0].open);
-                const bodyWidth = Math.max(0.3, 0.6);
+                )}
+              </svg>
+            ) : (
+              /* ─── Candlestick Chart ─── */
+              <svg width="100%" height="100%" viewBox={`0 0 ${chartData.length} 100`} preserveAspectRatio="none" style={{ display: "block" }}>
+                {(() => {
+                  const allHighs = chartData.map(p => p.high);
+                  const allLows = chartData.map(p => p.low);
+                  const candleMin = Math.min(...allLows);
+                  const candleMax = Math.max(...allHighs);
+                  const candleRange = candleMax - candleMin || 1;
+                  const toY = (v: number) => 100 - ((v - candleMin) / candleRange) * 90 - 5;
+                  const refY = toY(chartData[0].open);
+                  const bodyWidth = Math.max(0.3, 0.6);
 
-                return (
-                  <>
-                    {/* Opening price reference line */}
-                    <line x1="0" y1={refY} x2={chartData.length} y2={refY}
-                      stroke="rgba(236,227,213,0.12)" strokeWidth="1" vectorEffect="non-scaling-stroke" strokeDasharray="4,4" />
-                    {chartData.map((p, i) => {
-                      const isUp = p.close >= p.open;
-                      const color = isUp ? "var(--buy)" : "var(--sell)";
-                      const bodyTop = toY(Math.max(p.open, p.close));
-                      const bodyBot = toY(Math.min(p.open, p.close));
-                      const bodyH = Math.max(bodyBot - bodyTop, 0.3);
-                      const wickTop = toY(p.high);
-                      const wickBot = toY(p.low);
-                      const cx = i + 0.5;
+                  return (
+                    <>
+                      <line x1="0" y1={refY} x2={chartData.length} y2={refY}
+                        stroke="rgba(236,227,213,0.12)" strokeWidth="1" vectorEffect="non-scaling-stroke" strokeDasharray="4,4" />
+                      {chartData.map((p, i) => {
+                        const isUp = p.close >= p.open;
+                        const color = isUp ? "var(--buy)" : "var(--sell)";
+                        const bodyTop = toY(Math.max(p.open, p.close));
+                        const bodyBot = toY(Math.min(p.open, p.close));
+                        const bodyH = Math.max(bodyBot - bodyTop, 0.3);
+                        const wickTop = toY(p.high);
+                        const wickBot = toY(p.low);
+                        const cx = i + 0.5;
 
-                      return (
-                        <g key={i}>
-                          {/* Wick */}
-                          <line x1={cx} y1={wickTop} x2={cx} y2={wickBot}
-                            stroke={color} strokeWidth="0.8" vectorEffect="non-scaling-stroke" />
-                          {/* Body */}
-                          <rect
-                            x={cx - bodyWidth / 2} y={bodyTop}
-                            width={bodyWidth} height={bodyH}
-                            fill={isUp ? color : color}
-                            stroke={color} strokeWidth="0.3" vectorEffect="non-scaling-stroke"
-                            rx="0.05"
-                          />
-                        </g>
-                      );
-                    })}
-                    {/* Hover crosshair */}
-                    {hoverIndex !== null && (
-                      <>
+                        return (
+                          <g key={i}>
+                            <line x1={cx} y1={wickTop} x2={cx} y2={wickBot}
+                              stroke={color} strokeWidth="0.8" vectorEffect="non-scaling-stroke" />
+                            <rect
+                              x={cx - bodyWidth / 2} y={bodyTop}
+                              width={bodyWidth} height={bodyH}
+                              fill={color}
+                              stroke={color} strokeWidth="0.3" vectorEffect="non-scaling-stroke"
+                              rx="0.05"
+                            />
+                          </g>
+                        );
+                      })}
+                      {hoverIndex !== null && (
                         <line x1={hoverIndex + 0.5} y1="0" x2={hoverIndex + 0.5} y2="100"
                           stroke="rgba(236,227,213,0.3)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
-                        <circle
-                          cx={hoverIndex + 0.5}
-                          cy={toY(chartData[hoverIndex].close)}
-                          r="3" fill={chartData[hoverIndex].close >= chartData[hoverIndex].open ? "var(--buy)" : "var(--sell)"}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      </>
-                    )}
-                  </>
-                );
-              })()}
-            </svg>
-          )
+                      )}
+                    </>
+                  );
+                })()}
+              </svg>
+            )}
+
+            {/* HTML hover dot — avoids SVG stretch distortion */}
+            {hoverIndex !== null && chartInfo && (() => {
+              const price = chartData[hoverIndex].close;
+              const yPct = 100 - ((price - chartInfo.min) / chartInfo.range) * 90 - 5;
+              const total = chartType === "line" ? chartData.length - 1 : chartData.length;
+              const xIdx = chartType === "line" ? hoverIndex : hoverIndex + 0.5;
+              const xPct = (xIdx / total) * 100;
+              return (
+                <div style={{
+                  position: "absolute",
+                  left: `${xPct}%`,
+                  top: `${yPct}%`,
+                  width: 8, height: 8,
+                  borderRadius: "50%",
+                  background: chartColor,
+                  border: "2px solid var(--bg)",
+                  boxShadow: `0 0 0 1px ${chartColor}`,
+                  transform: "translate(-50%, -50%)",
+                  pointerEvents: "none",
+                  zIndex: 5,
+                }} />
+              );
+            })()}
+          </>
         ) : (
           <div className="flex items-center justify-center" style={{ height: "100%", color: "var(--text-muted)", fontSize: 12, fontFamily: "var(--font-mono)" }}>
             No chart data available
           </div>
         )}
       </div>
+
+      {/* ─── Date X-Axis ─── */}
+      {chartData.length > 0 && (
+        <div className="flex items-center justify-between" style={{ padding: "6px 0 0", marginBottom: 0 }}>
+          {(() => {
+            const labelCount = Math.min(6, chartData.length);
+            const step = Math.max(1, Math.floor((chartData.length - 1) / (labelCount - 1)));
+            const indices: number[] = [];
+            for (let i = 0; i < chartData.length; i += step) indices.push(i);
+            if (indices[indices.length - 1] !== chartData.length - 1) indices.push(chartData.length - 1);
+
+            const isIntraday = selectedPeriod === "1D";
+            return indices.map((idx) => {
+              const p = chartData[idx];
+              const d = new Date(p.timestamp > 1e12 ? p.timestamp : p.timestamp * 1000);
+              const label = isIntraday
+                ? d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+                : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+              return (
+                <span key={idx} style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                  {label}
+                </span>
+              );
+            });
+          })()}
+        </div>
+      )}
 
       {/* ─── Chart Controls: Period Selector + Chart Type Toggle + Maximize ─── */}
       <div className="flex items-center" style={{ gap: 0, marginBottom: 40, borderBottom: "1px solid var(--glass-border)" }}>
@@ -590,6 +683,9 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
         )}
       </div>
 
+      {/* ─── Fundamentals: progressive loading ─── */}
+      {!detail ? <FundamentalsSkeleton /> : <>
+
       {/* ─── About ─── */}
       {detail.description && (
         <Section title="About">
@@ -636,6 +732,245 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
           </div>
         </Section>
       )}
+
+      {/* ─── My Thesis ─── */}
+      <Section title="My Thesis">
+        {thesisEditing ? (
+          /* ── Edit Mode ── */
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {/* Sentiment selector */}
+            <div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, marginBottom: 8 }}>Sentiment</div>
+              <div className="flex" style={{ gap: 8 }}>
+                {(["bullish", "neutral", "bearish"] as const).map((s) => {
+                  const isActive = thesisDraft.sentiment === s;
+                  const colors = { bullish: "var(--buy)", neutral: "var(--warning)", bearish: "var(--sell)" };
+                  return (
+                    <button
+                      key={s}
+                      onClick={() => setThesisDraft(prev => ({ ...prev, sentiment: s }))}
+                      style={{
+                        padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                        textTransform: "capitalize", border: "1px solid",
+                        borderColor: isActive ? colors[s] : "rgba(236,227,213,0.12)",
+                        background: isActive ? `${colors[s]}18` : "transparent",
+                        color: isActive ? colors[s] : "var(--text-muted)",
+                      }}
+                    >{s}</button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Thesis narrative */}
+            <div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, marginBottom: 6 }}>Thesis</div>
+              <textarea
+                value={thesisDraft.thesis}
+                onChange={(e) => setThesisDraft(prev => ({ ...prev, thesis: e.target.value }))}
+                placeholder={`Why are you ${thesisDraft.sentiment} on ${ticker}?`}
+                rows={3}
+                style={{
+                  width: "100%", padding: 12, borderRadius: 10, fontSize: 13, lineHeight: 1.6,
+                  background: "rgba(236,227,213,0.04)", border: "1px solid rgba(236,227,213,0.12)",
+                  color: "var(--text-primary)", resize: "vertical", outline: "none",
+                  fontFamily: "inherit",
+                }}
+              />
+            </div>
+
+            {/* Target Price + Timeframe row */}
+            <div className="flex" style={{ gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, marginBottom: 6 }}>Target Price</div>
+                <input
+                  type="number" step="0.01"
+                  value={thesisDraft.targetPrice}
+                  onChange={(e) => setThesisDraft(prev => ({ ...prev, targetPrice: e.target.value }))}
+                  placeholder="e.g. 200"
+                  style={{
+                    width: "100%", padding: "8px 12px", borderRadius: 8, fontSize: 13,
+                    background: "rgba(236,227,213,0.04)", border: "1px solid rgba(236,227,213,0.12)",
+                    color: "var(--text-primary)", outline: "none", fontFamily: "var(--font-mono)",
+                  }}
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, marginBottom: 6 }}>Timeframe</div>
+                <input
+                  type="text"
+                  value={thesisDraft.timeframe}
+                  onChange={(e) => setThesisDraft(prev => ({ ...prev, timeframe: e.target.value }))}
+                  placeholder="e.g. 6 months"
+                  style={{
+                    width: "100%", padding: "8px 12px", borderRadius: 8, fontSize: 13,
+                    background: "rgba(236,227,213,0.04)", border: "1px solid rgba(236,227,213,0.12)",
+                    color: "var(--text-primary)", outline: "none",
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Catalysts + Risks */}
+            <div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, marginBottom: 6 }}>Catalysts (comma-separated)</div>
+              <input
+                type="text"
+                value={thesisDraft.catalysts}
+                onChange={(e) => setThesisDraft(prev => ({ ...prev, catalysts: e.target.value }))}
+                placeholder="e.g. AI growth, new product launch, earnings beat"
+                style={{
+                  width: "100%", padding: "8px 12px", borderRadius: 8, fontSize: 13,
+                  background: "rgba(236,227,213,0.04)", border: "1px solid rgba(236,227,213,0.12)",
+                  color: "var(--text-primary)", outline: "none",
+                }}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, marginBottom: 6 }}>Risks (comma-separated)</div>
+              <input
+                type="text"
+                value={thesisDraft.risks}
+                onChange={(e) => setThesisDraft(prev => ({ ...prev, risks: e.target.value }))}
+                placeholder="e.g. Regulation, competition, valuation"
+                style={{
+                  width: "100%", padding: "8px 12px", borderRadius: 8, fontSize: 13,
+                  background: "rgba(236,227,213,0.04)", border: "1px solid rgba(236,227,213,0.12)",
+                  color: "var(--text-primary)", outline: "none",
+                }}
+              />
+            </div>
+
+            {/* Save / Cancel buttons */}
+            <div className="flex" style={{ gap: 8, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setThesisEditing(false)}
+                style={{
+                  padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 600,
+                  background: "transparent", border: "1px solid rgba(236,227,213,0.12)",
+                  color: "var(--text-muted)", cursor: "pointer",
+                }}
+              >Cancel</button>
+              <button
+                onClick={saveThesis}
+                disabled={!thesisDraft.thesis.trim()}
+                style={{
+                  padding: "8px 20px", borderRadius: 8, fontSize: 12, fontWeight: 600,
+                  background: !thesisDraft.thesis.trim() ? "rgba(236,227,213,0.06)" : "var(--accent)",
+                  border: "none", color: !thesisDraft.thesis.trim() ? "var(--text-muted)" : "#0d0c0a",
+                  cursor: !thesisDraft.thesis.trim() ? "not-allowed" : "pointer",
+                }}
+              >Save Thesis</button>
+            </div>
+          </div>
+        ) : thesis ? (
+          /* ── View Mode ── */
+          <div>
+            {/* Sentiment badge + edit/delete */}
+            <div className="flex items-center" style={{ justifyContent: "space-between", marginBottom: 14 }}>
+              <span style={{
+                padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700,
+                textTransform: "uppercase", letterSpacing: "0.04em",
+                background: thesis.sentiment === "bullish" ? "rgba(0,200,83,0.12)" : thesis.sentiment === "bearish" ? "rgba(255,53,53,0.12)" : "rgba(255,171,0,0.12)",
+                color: thesis.sentiment === "bullish" ? "var(--buy)" : thesis.sentiment === "bearish" ? "var(--sell)" : "var(--warning)",
+              }}>{thesis.sentiment}</span>
+              <div className="flex" style={{ gap: 6 }}>
+                <button onClick={startEditThesis} style={{
+                  background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 4,
+                }} title="Edit thesis">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+                  </svg>
+                </button>
+                <button onClick={() => setThesis(null)} style={{
+                  background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 4,
+                }} title="Delete thesis">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Thesis text */}
+            <p style={{ fontSize: 14, lineHeight: 1.7, color: "var(--text-secondary)", margin: "0 0 16px" }}>
+              {thesis.thesis}
+            </p>
+
+            {/* Target + Timeframe */}
+            {(thesis.targetPrice || thesis.timeframe) && (
+              <div className="flex" style={{ gap: 24, marginBottom: 14 }}>
+                {thesis.targetPrice && (
+                  <div>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, marginBottom: 2 }}>Target Price</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", color: "var(--accent-bright)" }}>
+                      ${thesis.targetPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                )}
+                {thesis.timeframe && (
+                  <div>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, marginBottom: 2 }}>Timeframe</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{thesis.timeframe}</div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Catalysts */}
+            {thesis.catalysts.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, marginBottom: 6 }}>Catalysts</div>
+                <div className="flex" style={{ gap: 6, flexWrap: "wrap" }}>
+                  {thesis.catalysts.map((c, i) => (
+                    <span key={i} style={{
+                      padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500,
+                      background: "rgba(0,200,83,0.08)", color: "var(--buy)",
+                      border: "1px solid rgba(0,200,83,0.15)",
+                    }}>{c}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Risks */}
+            {thesis.risks.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600, marginBottom: 6 }}>Risks</div>
+                <div className="flex" style={{ gap: 6, flexWrap: "wrap" }}>
+                  {thesis.risks.map((r, i) => (
+                    <span key={i} style={{
+                      padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500,
+                      background: "rgba(255,53,53,0.08)", color: "var(--sell)",
+                      border: "1px solid rgba(255,53,53,0.15)",
+                    }}>{r}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Updated timestamp */}
+            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 8 }}>
+              Updated {new Date(thesis.updatedAt).toLocaleDateString()}
+            </div>
+          </div>
+        ) : (
+          /* ── Empty State ── */
+          <div style={{ textAlign: "center", padding: "24px 0" }}>
+            <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>
+              No thesis for {ticker} yet
+            </div>
+            <button
+              onClick={startEditThesis}
+              style={{
+                padding: "8px 20px", borderRadius: 8, fontSize: 12, fontWeight: 600,
+                background: "rgba(236,227,213,0.06)", border: "1px solid rgba(236,227,213,0.12)",
+                color: "var(--accent)", cursor: "pointer",
+              }}
+            >Write Your Thesis</button>
+          </div>
+        )}
+      </Section>
 
       {/* ─── Key Statistics (Robinhood flat 4-column grid) ─── */}
       <Section title="Key statistics">
@@ -966,6 +1301,7 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
           ))}
         </Section>
       )}
+      </>}
     </div>
   );
 }

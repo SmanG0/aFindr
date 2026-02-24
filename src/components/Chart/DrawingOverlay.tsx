@@ -919,10 +919,12 @@ export default function DrawingOverlay({
 
   // ─── SVG Click Handler (selection, eraser) ───
   const handleSvgClick = useCallback(
-    (e: React.MouseEvent<SVGSVGElement>) => {
+    (e: React.MouseEvent) => {
       if (!chartApi || !seriesApi) return;
 
-      const rect = e.currentTarget.getBoundingClientRect();
+      // Use svgRef for coordinates (not e.currentTarget which may be <g>)
+      const rect = svgRef.current?.getBoundingClientRect();
+      if (!rect) return;
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
 
@@ -949,10 +951,12 @@ export default function DrawingOverlay({
 
   // ─── SVG Double-Click Handler ───
   const handleSvgDoubleClick = useCallback(
-    (e: React.MouseEvent<SVGSVGElement>) => {
+    (e: React.MouseEvent) => {
       if (!chartApi || !seriesApi || !onDoubleClick) return;
 
-      const rect = e.currentTarget.getBoundingClientRect();
+      // Use svgRef for coordinates (not e.currentTarget which may be <g>)
+      const rect = svgRef.current?.getBoundingClientRect();
+      if (!rect) return;
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
 
@@ -971,11 +975,13 @@ export default function DrawingOverlay({
 
   // ─── SVG MouseDown Handler (start drag) ───
   const handleSvgMouseDown = useCallback(
-    (e: React.MouseEvent<SVGSVGElement>) => {
+    (e: React.MouseEvent) => {
       if (!chartApi || !seriesApi || !selectedId) return;
       if (e.button !== 0) return; // left click only
 
-      const rect = e.currentTarget.getBoundingClientRect();
+      // Use svgRef for coordinates (not e.currentTarget which may be <g>)
+      const rect = svgRef.current?.getBoundingClientRect();
+      if (!rect) return;
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
 
@@ -1099,6 +1105,12 @@ export default function DrawingOverlay({
 
   if (!chartApi || !seriesApi) return null;
 
+  // The SVG overlay should never block scroll/zoom on the chart.
+  // We use pointerEvents: "none" by default and only set "auto" when actively
+  // dragging a selected drawing. For clicks/double-clicks on drawings, we use
+  // a transparent click-catcher that doesn't block scroll.
+  const isDragging = !!dragState;
+
   const cursorStyle = activeTool === "eraser" ? "not-allowed"
     : dragState ? (dragState.type === "resize" ? "crosshair" : "grabbing")
     : selectedId ? "grab"
@@ -1108,12 +1120,21 @@ export default function DrawingOverlay({
     <svg
       ref={svgRef}
       className="absolute inset-0 z-10"
-      style={{ width: "100%", height: "100%", pointerEvents: "auto", cursor: cursorStyle }}
-      onClick={handleSvgClick}
-      onDoubleClick={handleSvgDoubleClick}
-      onMouseDown={handleSvgMouseDown}
+      style={{
+        width: "100%",
+        height: "100%",
+        pointerEvents: "none",
+        cursor: cursorStyle,
+        overflow: "visible",
+      }}
     >
-      <g>
+      {/* Drawings group — each drawing element has pointerEvents:auto for click/drag */}
+      <g
+        style={{ pointerEvents: isDragging ? "auto" : "visiblePainted" }}
+        onClick={handleSvgClick}
+        onDoubleClick={handleSvgDoubleClick}
+        onMouseDown={handleSvgMouseDown}
+      >
         {visibleDrawings.map(renderDrawing)}
         {/* Preview line while placing a 2-click drawing */}
         {pendingPoint && mousePoint && (

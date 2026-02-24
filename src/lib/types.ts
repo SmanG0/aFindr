@@ -68,6 +68,34 @@ export interface BacktestMetrics {
   expectancy?: number;
   expectancyRatio?: number;
   payoffRatio?: number;
+  // Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014)
+  deflatedSharpeRatio?: number;
+  dsrPvalue?: number;
+}
+
+// Parameter sweep result from VectorBT
+export interface ParameterSweepResult {
+  totalCombos: number;
+  paramNames: string[];
+  bestParams: Record<string, number>;
+  bestMetrics: BacktestMetrics;
+  heatmapData: HeatmapData | null;
+  allResults: Record<string, unknown>[];
+}
+
+// Heatmap data for 2-param sweeps
+export interface HeatmapData {
+  xParam: string;
+  yParam: string;
+  xValues: number[];
+  yValues: number[];
+  metric: string;
+  cells: {
+    x: number;
+    y: number;
+    value: number;
+    metrics: Record<string, number>;
+  }[];
 }
 
 // Monte Carlo simulation result
@@ -94,6 +122,15 @@ export interface MonteCarloResult {
     p75: number[];
     p95: number[];
   };
+  // Multi-method Monte Carlo (Phase 2)
+  method?: "reshuffle" | "resample" | "skip" | "full";
+  robustnessScore?: number;     // 0-100 composite score
+  robustnessGrade?: string;     // A+ through F
+  subResults?: {
+    reshuffle?: MonteCarloResult;
+    resample?: MonteCarloResult;
+    skip?: MonteCarloResult;
+  };
 }
 
 // Walk-forward analysis result
@@ -116,6 +153,12 @@ export interface WalkForwardResult {
   oosTrades: Trade[];
   oosEquityCurve: { time: number; value: number }[];
   robustnessRatio: number;
+  // Stability metrics (Phase 2D)
+  paramStability?: {
+    coefficientOfVariation: Record<string, number>;
+    recommendation: "PASS" | "CAUTION" | "FAIL";
+    reasons: string[];
+  };
 }
 
 // Trade pattern analysis result
@@ -175,6 +218,9 @@ export interface ChatMessage {
   monteCarloResult?: MonteCarloResult;
   walkForwardResult?: WalkForwardResult;
   tradeAnalysisResult?: TradeAnalysisResult;
+  chartScriptResult?: import("./chart-scripts").ChartScript;
+  // NOTE: Added for Agent SDK SSE streaming — true while tokens are arriving
+  isStreaming?: boolean;
 }
 
 // Tick data from Databento
@@ -213,6 +259,7 @@ export interface ChatResponse {
   monteCarlo?: MonteCarloResult;
   walkForward?: WalkForwardResult;
   tradeAnalysis?: TradeAnalysisResult;
+  chartScript?: import("./chart-scripts").ChartScript;
 }
 
 export interface DataRequest {

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import numpy as np
+from scipy import stats as scipy_stats
 
 
 def calculate_metrics(trades: List[Dict], initial_balance: float) -> dict:
@@ -82,6 +83,9 @@ def calculate_metrics(trades: List[Dict], initial_balance: float) -> dict:
     # Payoff ratio (avg win / avg loss magnitude)
     payoff_ratio = round(abs(float(np.mean(wins)) / float(np.mean(losses))), 2) if losses and wins else 0.0
 
+    # Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014)
+    dsr, dsr_pvalue = deflated_sharpe_ratio(sharpe, len(trades))
+
     return {
         "total_trades": len(trades),
         "win_rate": len(wins) / len(trades) if trades else 0.0,
@@ -92,7 +96,7 @@ def calculate_metrics(trades: List[Dict], initial_balance: float) -> dict:
         "max_drawdown_pct": round(max_dd_pct * 100, 2),
         "max_consecutive_losses": max_consec_losses,
         "max_consecutive_wins": max_consec_wins,
-        "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss > 0 else float("inf"),
+        "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss > 0 else 9999.99,
         "sharpe_ratio": round(sharpe, 2),
         "avg_win": round(float(np.mean(wins)), 2) if wins else 0.0,
         "avg_loss": round(float(np.mean(losses)), 2) if losses else 0.0,
@@ -102,4 +106,62 @@ def calculate_metrics(trades: List[Dict], initial_balance: float) -> dict:
         "expectancy": expectancy,
         "expectancy_ratio": expectancy_ratio,
         "payoff_ratio": payoff_ratio,
+        "deflated_sharpe_ratio": dsr,
+        "dsr_pvalue": dsr_pvalue,
     }
+
+
+def deflated_sharpe_ratio(
+    observed_sharpe: float,
+    num_trades: int,
+    num_trials: int = 1,
+    skewness: float = 0.0,
+    kurtosis: float = 3.0,
+) -> tuple:
+    """Compute the Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014).
+
+    Corrects for multiple testing bias when many parameter combinations
+    are tested. A DSR p-value < 0.05 means the Sharpe is statistically
+    significant even after accounting for the number of trials.
+
+    Args:
+        observed_sharpe: The observed Sharpe ratio.
+        num_trades: Number of trades in the backtest.
+        num_trials: Number of independent strategy variants tested.
+        skewness: Skewness of returns (0 for normal).
+        kurtosis: Kurtosis of returns (3 for normal).
+
+    Returns:
+        (dsr_value, p_value) tuple. Higher DSR and lower p-value = more robust.
+    """
+    if num_trades <= 1 or observed_sharpe == 0:
+        return 0.0, 1.0
+
+    # Expected maximum Sharpe ratio under null hypothesis (all trials are noise)
+    # E[max(SR)] ≈ sqrt(2 * log(num_trials)) * (1 - euler_gamma / (2 * log(num_trials)))
+    if num_trials > 1:
+        euler_gamma = 0.5772156649
+        e_max_sr = np.sqrt(2 * np.log(num_trials))
+        if np.log(num_trials) > 0:
+            e_max_sr *= (1 - euler_gamma / (2 * np.log(num_trials)))
+        e_max_sr += euler_gamma / (2 * np.sqrt(2 * np.log(num_trials)))
+    else:
+        e_max_sr = 0.0
+
+    # Standard error of the Sharpe ratio (Lo, 2002)
+    # SE(SR) = sqrt((1 - skew*SR + (kurtosis-1)/4 * SR^2) / (num_trades - 1))
+    sr = observed_sharpe
+    se_sr = np.sqrt(
+        (1 - skewness * sr + ((kurtosis - 1) / 4) * sr ** 2) / max(num_trades - 1, 1)
+    )
+
+    if se_sr == 0:
+        return 0.0, 1.0
+
+    # DSR test statistic
+    dsr_stat = (sr - e_max_sr) / se_sr
+
+    # P-value from standard normal CDF
+    p_value = 1.0 - float(scipy_stats.norm.cdf(dsr_stat))
+
+    return round(float(dsr_stat), 4), round(p_value, 4)

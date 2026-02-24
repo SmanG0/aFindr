@@ -8,7 +8,7 @@ from engine.metrics import calculate_metrics
 
 @dataclass
 class BacktestConfig:
-    initial_balance: float = 50000.0
+    initial_balance: float = 25000.0
     commission: float = 2.50
     slippage_ticks: int = 1
     point_value: float = 20.0

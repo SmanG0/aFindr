@@ -339,3 +339,268 @@ export async function fetchStrategy(filename: string): Promise<Record<string, un
   if (!res.ok) throw new Error(`Strategy fetch failed: ${res.statusText}`);
   return res.json();
 }
+
+export async function rerunStrategy(filename: string): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/strategies/${encodeURIComponent(filename)}/rerun`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Strategy rerun failed: ${res.statusText}`);
+  return res.json();
+}
+
+// ─── Trading Sync API (fire-and-forget) ───
+
+function fireAndForget(url: string, body: unknown): void {
+  fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch(() => {
+    // Silently ignore — DB sync is best-effort
+  });
+}
+
+export function syncPosition(position: {
+  id: string;
+  symbol: string;
+  side: string;
+  size: number;
+  entryPrice: number;
+  entryTime: number;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  commission: number;
+}): void {
+  fireAndForget(`${API_BASE}/trading/positions`, {
+    id: position.id,
+    symbol: position.symbol,
+    side: position.side,
+    size: position.size,
+    entry_price: position.entryPrice,
+    entry_time: position.entryTime,
+    stop_loss: position.stopLoss,
+    take_profit: position.takeProfit,
+    commission: position.commission,
+    source: "manual",
+  });
+}
+
+export function syncClosePosition(
+  positionId: string,
+  exitPrice: number,
+  exitTime: number,
+  pnl: number,
+  pnlPoints: number,
+  commission: number,
+): void {
+  fetch(`${API_BASE}/trading/positions/${positionId}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      exit_price: exitPrice,
+      exit_time: exitTime,
+      pnl,
+      pnl_points: pnlPoints,
+      commission,
+    }),
+  }).catch(() => {});
+}
+
+export function syncFullState(state: {
+  balance: number;
+  equity: number;
+  unrealizedPnl: number;
+  positions: Array<Record<string, unknown>>;
+  tradeHistory: Array<Record<string, unknown>>;
+}): void {
+  fireAndForget(`${API_BASE}/trading/sync`, {
+    balance: state.balance,
+    equity: state.equity,
+    unrealized_pnl: state.unrealizedPnl,
+    positions: state.positions,
+    trade_history: state.tradeHistory,
+  });
+}
+
+export function takeSnapshot(state: {
+  balance: number;
+  equity: number;
+  unrealizedPnl: number;
+  positionCount: number;
+}): void {
+  fireAndForget(`${API_BASE}/trading/snapshot`, {
+    timestamp: Date.now(),
+    balance: state.balance,
+    equity: state.equity,
+    unrealized_pnl: state.unrealizedPnl,
+    position_count: state.positionCount,
+  });
+}
+
+// ─── Iterative Agent API ───
+
+export interface IterationStartRequest {
+  description: string;
+  symbol?: string;
+  interval?: string;
+  period?: string;
+  targetMetric?: string;
+  targetValue?: number;
+}
+
+export interface IterationSession {
+  sessionId: string;
+  status: string;
+  iterations: IterationResultAPI[];
+}
+
+export interface IterationResultAPI {
+  iteration: number;
+  strategyName: string;
+  strategyDescription: string;
+  code: string;
+  metrics: Record<string, number>;
+  monteCarlo?: Record<string, unknown>;
+  status: string;
+  feedback?: string;
+  timestamp: number;
+}
+
+export async function startIterativeSession(req: IterationStartRequest): Promise<IterationSession> {
+  const res = await fetch(`${API_BASE}/iterations/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      description: req.description,
+      symbol: req.symbol || "NQ=F",
+      interval: req.interval || "1d",
+      period: req.period || "1y",
+      target_metric: req.targetMetric,
+      target_value: req.targetValue,
+    }),
+  });
+  if (!res.ok) throw new Error(`Iteration start failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function getIterationSession(sessionId: string): Promise<IterationSession> {
+  const res = await fetch(`${API_BASE}/iterations/${sessionId}`);
+  if (!res.ok) throw new Error(`Iteration fetch failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function approveIteration(sessionId: string): Promise<IterationSession> {
+  const res = await fetch(`${API_BASE}/iterations/${sessionId}/approve`, { method: "POST" });
+  if (!res.ok) throw new Error(`Approve failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function rejectIteration(sessionId: string, feedback: string): Promise<IterationSession> {
+  const res = await fetch(`${API_BASE}/iterations/${sessionId}/reject`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ feedback }),
+  });
+  if (!res.ok) throw new Error(`Reject failed: ${res.statusText}`);
+  return res.json();
+}
+
+// ─── Parameter Optimization API ───
+
+export interface SweepRequest {
+  strategyDescription: string;
+  paramGrid: Record<string, number[]>;
+  symbol?: string;
+  optimizationMetric?: string;
+}
+
+export interface SweepResultAPI {
+  paramNames: string[];
+  paramCombos: number;
+  bestParams: Record<string, number>;
+  bestMetric: number;
+  heatmap?: {
+    xParam: string;
+    yParam: string;
+    xValues: number[];
+    yValues: number[];
+    values: number[][];
+    metric: string;
+  };
+}
+
+export async function runParameterSweep(req: SweepRequest): Promise<SweepResultAPI> {
+  const res = await fetch(`${API_BASE}/optimize/sweep`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      strategy_description: req.strategyDescription,
+      param_grid: req.paramGrid,
+      symbol: req.symbol || "NQ=F",
+      optimization_metric: req.optimizationMetric || "sharpe_ratio",
+    }),
+  });
+  if (!res.ok) throw new Error(`Sweep failed: ${res.statusText}`);
+  return res.json();
+}
+
+// ─── WebSocket Helpers ───
+
+export function createBacktestWebSocket(
+  runId: string,
+  onProgress: (data: { phase: string; progress: number }) => void,
+  onComplete: (data: Record<string, unknown>) => void,
+  onError: (error: string) => void,
+): WebSocket {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${protocol}//${window.location.host}/ws/backtest/${runId}`);
+
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type === "progress") onProgress(msg);
+    else if (msg.type === "complete") onComplete(msg.data);
+    else if (msg.type === "error") onError(msg.error);
+  };
+
+  ws.onerror = () => onError("WebSocket connection error");
+
+  return ws;
+}
+
+export function createIterationWebSocket(
+  sessionId: string,
+  onMessage: (data: Record<string, unknown>) => void,
+): WebSocket {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${protocol}//${window.location.host}/ws/iterations/${sessionId}`);
+  ws.onmessage = (event) => onMessage(JSON.parse(event.data));
+  return ws;
+}
+
+// ─── Trading Query API ───
+
+export async function fetchTradeHistory(params?: {
+  symbol?: string;
+  source?: string;
+  limit?: number;
+}): Promise<{ trades: Record<string, unknown>[] }> {
+  const searchParams = new URLSearchParams();
+  if (params?.symbol) searchParams.set("symbol", params.symbol);
+  if (params?.source) searchParams.set("source", params.source);
+  if (params?.limit) searchParams.set("limit", String(params.limit));
+  const qs = searchParams.toString();
+  const res = await fetch(`${API_BASE}/trading/trades${qs ? `?${qs}` : ""}`);
+  if (!res.ok) return { trades: [] };
+  return res.json();
+}
+
+export async function fetchTradeAnalytics(params?: {
+  symbol?: string;
+}): Promise<Record<string, unknown>> {
+  const searchParams = new URLSearchParams();
+  if (params?.symbol) searchParams.set("symbol", params.symbol);
+  const qs = searchParams.toString();
+  const res = await fetch(`${API_BASE}/trading/analytics${qs ? `?${qs}` : ""}`);
+  if (!res.ok) return {};
+  return res.json();
+}

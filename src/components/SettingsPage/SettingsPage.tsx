@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { AppSettings } from "@/lib/types";
+import type { AppSettings, RiskSettings } from "@/lib/types";
 import SettingsSidebar, { type SettingsSection } from "./SettingsSidebar";
 import GeneralSettings from "./subpages/GeneralSettings";
 import AppearanceSettings from "./subpages/AppearanceSettings";
@@ -9,14 +9,17 @@ import TradingSettings from "./subpages/TradingSettings";
 import AccountSettings from "./subpages/AccountSettings";
 import ApiSettings from "./subpages/ApiSettings";
 import BrokerLoginsSettings from "./subpages/BrokerLoginsSettings";
+import RiskManagement from "@/components/RiskManagement/RiskManagement";
 
 interface SettingsPageProps {
   settings: AppSettings;
   onUpdateSettings: (settings: AppSettings) => void;
+  riskSettings?: RiskSettings;
+  onUpdateRiskSettings?: (settings: RiskSettings) => void;
   onBack?: () => void;
 }
 
-export default function SettingsPage({ settings, onUpdateSettings, onBack }: SettingsPageProps) {
+export default function SettingsPage({ settings, onUpdateSettings, riskSettings, onUpdateRiskSettings, onBack }: SettingsPageProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>("general");
   const update = (patch: Partial<AppSettings>) => onUpdateSettings({ ...settings, ...patch });
 
@@ -28,6 +31,16 @@ export default function SettingsPage({ settings, onUpdateSettings, onBack }: Set
         return <AppearanceSettings settings={settings} onUpdate={update} />;
       case "trading":
         return <TradingSettings settings={settings} onUpdate={update} />;
+      case "risk":
+        return riskSettings && onUpdateRiskSettings ? (
+          <RiskManagement
+            isOpen={true}
+            onClose={() => setActiveSection("general")}
+            settings={riskSettings}
+            onUpdateSettings={onUpdateRiskSettings}
+            embedded
+          />
+        ) : null;
       case "account":
         return <AccountSettings settings={settings} onUpdate={update} />;
       case "apis":
