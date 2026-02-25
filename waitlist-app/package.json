@@ -9,7 +9,6 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.36.2",
     "framer-motion": "^12.34.3",
     "next": "^15.1.9",

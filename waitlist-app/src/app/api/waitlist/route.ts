@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 
 const redis =
@@ -9,14 +8,6 @@ const redis =
         token: process.env.UPSTASH_REDIS_REST_TOKEN,
       })
     : null;
-
-const ratelimit =
-  redis &&
-  new Ratelimit({
-    redis,
-    limiter: Ratelimit.slidingWindow(5, "1 m"),
-    analytics: true,
-  });
 
 const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
 const MAX_EMAIL_LENGTH = 254;
@@ -30,17 +21,6 @@ export async function POST(request: Request) {
   }
 
   try {
-    if (ratelimit) {
-      const ip = request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip") ?? "anonymous";
-      const { success } = await ratelimit.limit(ip);
-      if (!success) {
-        return NextResponse.json(
-          { error: "Too many requests. Please try again later." },
-          { status: 429 }
-        );
-      }
-    }
-
     const body = await request.json();
     const raw = typeof body?.email === "string" ? body.email : "";
     const email = raw.trim().toLowerCase().slice(0, MAX_EMAIL_LENGTH);
