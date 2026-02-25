@@ -8,9 +8,17 @@ export async function POST(
 ) {
   const { filename } = await params;
   try {
+    const headers: Record<string, string> = {};
+
+    // Forward Convex auth token to FastAPI
+    const token = _req.cookies.get("__convexAuthJWT")?.value;
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
     const res = await fetch(
       `${FASTAPI_URL}/api/strategies/${encodeURIComponent(filename)}/rerun`,
-      { method: "POST", cache: "no-store" }
+      { method: "POST", cache: "no-store", headers }
     );
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Rerun failed" }));

@@ -5,6 +5,57 @@ import { motion, useInView, AnimatePresence } from "framer-motion";
 import { useRouter } from "next/navigation";
 import "./landing.css";
 
+// ─── African Market Ticker Data (static for landing) ───
+interface LandingTicker {
+  symbol: string;
+  price: string;
+  change: number;
+}
+
+const AFRICAN_TICKERS: LandingTicker[] = [
+  { symbol: "SCOM", price: "28.50", change: 1.42 },
+  { symbol: "EQTY", price: "42.75", change: -0.88 },
+  { symbol: "KCB", price: "35.20", change: 2.15 },
+  { symbol: "EABL", price: "158.00", change: -1.23 },
+  { symbol: "BAMB", price: "31.10", change: 0.65 },
+  { symbol: "ABSA", price: "12.85", change: 1.97 },
+  { symbol: "COOP", price: "14.60", change: -0.41 },
+  { symbol: "SBIC", price: "24.90", change: 0.81 },
+  { symbol: "BAT", price: "380.00", change: -2.10 },
+  { symbol: "KNRE", price: "2.48", change: 3.23 },
+  { symbol: "SMER", price: "3.80", change: -0.53 },
+  { symbol: "TOTL", price: "18.95", change: 1.07 },
+  { symbol: "KPLC", price: "1.62", change: -1.84 },
+  { symbol: "NCBA", price: "38.45", change: 0.39 },
+  { symbol: "JUB", price: "305.00", change: 1.65 },
+  { symbol: "SASN", price: "19.70", change: -0.76 },
+];
+
+function LandingTickerBanner() {
+  return (
+    <div className="landing-ticker-banner">
+      <div className="landing-ticker-track">
+        {[0, 1].map((copy) => (
+          <div key={copy} className="landing-ticker-set">
+            {AFRICAN_TICKERS.map((t) => {
+              const isUp = t.change >= 0;
+              return (
+                <span key={`${copy}-${t.symbol}`} className="landing-ticker-item">
+                  <span className="landing-ticker-symbol">{t.symbol}</span>
+                  <span className="landing-ticker-price">{t.price}</span>
+                  <span className={`landing-ticker-change ${isUp ? "up" : "down"}`}>
+                    {isUp ? "+" : ""}{t.change.toFixed(2)}%
+                  </span>
+                </span>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Alphy Rotating Bubble Messages ───
 const ALPHY_MESSAGES = [
   "Hi, I'm Alphy — your trading copilot",
@@ -632,10 +683,13 @@ export default function LandingPage() {
           </div>
         </div>
         <div className="landing-nav-actions">
-          <button className="btn-ghost" onClick={() => router.push("/")}>Sign In</button>
+          <button className="btn-ghost" onClick={() => router.push("/#dashboard")}>Sign In</button>
           <button className="btn-accent" onClick={() => router.push("/onboarding")}>Get Started</button>
         </div>
       </nav>
+
+      {/* ─── Ticker Banner ─── */}
+      <LandingTickerBanner />
 
       {/* ─── Alphy Chat Widget ─── */}
       <AnimatePresence>
@@ -800,6 +854,37 @@ export default function LandingPage() {
           <span className="footer-link">Terms</span>
         </div>
       </footer>
+
+      {/* Dev nav panel */}
+      {process.env.NODE_ENV === "development" && (
+        <div style={{
+          position: "fixed", bottom: 12, right: 12, zIndex: 99999,
+          background: "rgba(26,23,20,0.95)", backdropFilter: "blur(12px)",
+          border: "1px solid rgba(196,123,58,0.3)", borderRadius: 10,
+          padding: "6px 8px", display: "flex", gap: 4, alignItems: "center",
+          boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
+          fontFamily: "monospace", fontSize: 9, fontWeight: 600,
+        }}>
+          <span style={{ color: "rgba(196,123,58,0.6)", padding: "0 4px", userSelect: "none" }}>DEV</span>
+          {["landing", "waitlist", "login", "onboarding"].map((r) => (
+            <button key={r} onClick={() => window.location.href = `/${r}`} style={{
+              padding: "3px 7px", borderRadius: 5, border: "1px dashed rgba(196,123,58,0.2)", cursor: "pointer",
+              background: r === "landing" ? "rgba(196,123,58,0.25)" : "transparent",
+              color: r === "landing" ? "#c47b3a" : "rgba(236,227,213,0.3)",
+              fontSize: 9, fontFamily: "monospace", fontWeight: 600, textTransform: "capitalize" as const,
+            }}>{r}</button>
+          ))}
+          <span style={{ width: 1, height: 12, background: "rgba(236,227,213,0.1)" }} />
+          <button onClick={() => {
+            localStorage.setItem("afindr_onboarding", JSON.stringify({ completed: true, name: "Dev" }));
+            window.location.href = "/";
+          }} style={{
+            padding: "3px 10px", borderRadius: 5, border: "none", cursor: "pointer",
+            background: "#c47b3a", color: "#fff",
+            fontSize: 9, fontFamily: "monospace", fontWeight: 700,
+          }}>SKIP TO APP →</button>
+        </div>
+      )}
     </div>
   );
 }

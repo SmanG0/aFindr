@@ -1,9 +1,13 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "../../../convex/_generated/api";
+import { useCurrentUser } from "@/hooks/useConvexUser";
 import type { StockDetailFull, ChartDataPoint, NewsArticle } from "@/lib/api";
 import { fetchStockDetailFull, fetchStockChart, fetchNewsFeed } from "@/lib/api";
 import { formatCurrency, formatPercent } from "@/lib/portfolio-utils";
+import { useHoldings } from "@/hooks/useHoldings";
 
 interface StockThesis {
   ticker: string;
@@ -222,7 +226,18 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
   const [showFullDescription, setShowFullDescription] = useState(false);
   const [news, setNews] = useState<NewsArticle[]>([]);
 
+  // ─── Holdings (Convex-backed) ───
+  const { holdings, addHolding, removeHolding } = useHoldings();
+  const holding = holdings.find((h) => h.symbol === ticker);
+  const [addSharesInput, setAddSharesInput] = useState("1");
+  const [holdingActionPending, setHoldingActionPending] = useState(false);
+
   // ─── Thesis state ───
+  const { isAuthenticated } = useCurrentUser();
+  const convexThesis = useQuery(api.theses.getByTicker, isAuthenticated ? { ticker } : "skip");
+  const upsertThesisMut = useMutation(api.theses.upsert);
+  const removeThesisMut = useMutation(api.theses.remove);
+
   const [thesis, setThesis] = useState<StockThesis | null>(null);
   const [thesisEditing, setThesisEditing] = useState(false);
   const [thesisDraft, setThesisDraft] = useState({ thesis: "", sentiment: "neutral" as StockThesis["sentiment"], targetPrice: "", timeframe: "", catalysts: "", risks: "" });
@@ -240,6 +255,41 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
     setThesisHydrated(true);
   }, [ticker]);
 
+  // Convex reconciliation: Convex wins if present, else seed from localStorage
+  const thesisReconciledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!thesisHydrated || !isAuthenticated || convexThesis === undefined || thesisReconciledRef.current === ticker) return;
+    thesisReconciledRef.current = ticker;
+    if (convexThesis) {
+      // Convex has data → use it
+      const mapped: StockThesis = {
+        ticker: convexThesis.ticker,
+        sentiment: convexThesis.sentiment,
+        thesis: convexThesis.thesis,
+        targetPrice: convexThesis.targetPrice,
+        timeframe: convexThesis.timeframe,
+        catalysts: convexThesis.catalysts,
+        risks: convexThesis.risks,
+        createdAt: convexThesis.createdAt,
+        updatedAt: convexThesis.updatedAt,
+      };
+      setThesis(mapped);
+      localStorage.setItem(`afindr_thesis_${ticker}`, JSON.stringify(mapped));
+    } else if (thesis) {
+      // Convex empty but localStorage has data → seed Convex
+      upsertThesisMut({
+        ticker,
+        sentiment: thesis.sentiment,
+        thesis: thesis.thesis,
+        targetPrice: thesis.targetPrice,
+        timeframe: thesis.timeframe,
+        catalysts: thesis.catalysts,
+        risks: thesis.risks,
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thesisHydrated, isAuthenticated, convexThesis, ticker]);
+
   // Persist thesis to localStorage
   useEffect(() => {
     if (!thesisHydrated) return;
@@ -252,19 +302,38 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
 
   const saveThesis = useCallback(() => {
     const now = Date.now();
+    const catalysts = thesisDraft.catalysts.split(",").map(s => s.trim()).filter(Boolean);
+    const risks = thesisDraft.risks.split(",").map(s => s.trim()).filter(Boolean);
+    const targetPrice = thesisDraft.targetPrice ? parseFloat(thesisDraft.targetPrice) : undefined;
+    const timeframe = thesisDraft.timeframe || undefined;
+
     setThesis({
       ticker,
       sentiment: thesisDraft.sentiment,
       thesis: thesisDraft.thesis,
-      targetPrice: thesisDraft.targetPrice ? parseFloat(thesisDraft.targetPrice) : undefined,
-      timeframe: thesisDraft.timeframe || undefined,
-      catalysts: thesisDraft.catalysts.split(",").map(s => s.trim()).filter(Boolean),
-      risks: thesisDraft.risks.split(",").map(s => s.trim()).filter(Boolean),
+      targetPrice,
+      timeframe,
+      catalysts,
+      risks,
       createdAt: thesis?.createdAt || now,
       updatedAt: now,
     });
+
+    // Dual-write to Convex
+    if (isAuthenticated) {
+      upsertThesisMut({
+        ticker,
+        sentiment: thesisDraft.sentiment,
+        thesis: thesisDraft.thesis,
+        targetPrice,
+        timeframe,
+        catalysts,
+        risks,
+      });
+    }
+
     setThesisEditing(false);
-  }, [ticker, thesisDraft, thesis]);
+  }, [ticker, thesisDraft, thesis, isAuthenticated, upsertThesisMut]);
 
   const startEditThesis = useCallback(() => {
     if (thesis) {
@@ -286,18 +355,30 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const chartContainerRef = useRef<HTMLDivElement>(null);
 
-  // ─── Fetch stock detail ───
+  // ─── Fetch stock detail + news in parallel (both depend only on ticker) ───
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetchStockDetailFull(ticker)
-      .then((data) => { if (!cancelled) { setDetail(data); setLoading(false); } })
-      .catch((err) => { if (!cancelled) { setError(String(err)); setLoading(false); } });
+
+    Promise.all([
+      fetchStockDetailFull(ticker),
+      fetchNewsFeed({ ticker, limit: 10 }),
+    ]).then(([detailData, newsData]) => {
+      if (cancelled) return;
+      setDetail(detailData);
+      setNews(newsData.articles ?? []);
+      setLoading(false);
+    }).catch((err) => {
+      if (cancelled) return;
+      setError(String(err));
+      setLoading(false);
+    });
+
     return () => { cancelled = true; };
   }, [ticker]);
 
-  // ─── Fetch chart data ───
+  // ─── Fetch chart data (depends on ticker + period) ───
   useEffect(() => {
     let cancelled = false;
     setChartLoading(true);
@@ -306,15 +387,6 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
       .catch(() => { if (!cancelled) { setChartData([]); setChartLoading(false); } });
     return () => { cancelled = true; };
   }, [ticker, selectedPeriod]);
-
-  // ─── Fetch news for this ticker ───
-  useEffect(() => {
-    let cancelled = false;
-    fetchNewsFeed({ ticker, limit: 10 })
-      .then((data) => { if (!cancelled) setNews(data.articles ?? []); })
-      .catch(() => { if (!cancelled) setNews([]); });
-    return () => { cancelled = true; };
-  }, [ticker]);
 
   // ─── Chart hover ───
   const handleChartMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -331,8 +403,9 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
   const chartInfo = useMemo(() => {
     if (chartData.length < 2) return null;
     const closes = chartData.map((p) => p.close);
-    const min = Math.min(...closes);
-    const max = Math.max(...closes);
+    // Use full OHLC range so line & candle charts share the same Y-axis
+    const min = Math.min(...chartData.map((p) => p.low));
+    const max = Math.max(...chartData.map((p) => p.high));
     const range = max - min || 1;
     const first = closes[0];
     const last = closes[closes.length - 1];
@@ -475,16 +548,20 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
               /* ─── Line Chart ─── */
               <svg width="100%" height="100%" viewBox={`0 0 ${chartData.length - 1} 100`} preserveAspectRatio="none" style={{ display: "block" }}>
                 {(() => {
-                  const { closes, min, range } = chartInfo;
-                  const linePoints = closes.map((c, i) => `${i},${100 - ((c - min) / range) * 90 - 5}`).join(" ");
+                  const { closes, min, max, range } = chartInfo;
+                  const toY = (v: number) => 100 - ((v - min) / range) * 90 - 5;
+                  const linePoints = closes.map((c, i) => `${i},${toY(c)}`).join(" ");
                   const fillPoints = `0,100 ${linePoints} ${closes.length - 1},100`;
-                  const refY = 100 - ((closes[0] - min) / range) * 90 - 5;
+                  const refPrice = detail?.prevClose ?? closes[0];
+                  const refY = toY(refPrice);
                   return (
                     <>
                       <polygon points={fillPoints} fill={chartFillColor} />
                       <polyline points={linePoints} fill="none" stroke={chartColor} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-                      <line x1="0" y1={refY} x2={closes.length - 1} y2={refY}
-                        stroke="rgba(236,227,213,0.12)" strokeWidth="1" vectorEffect="non-scaling-stroke" strokeDasharray="4,4" />
+                      {refPrice >= min && refPrice <= max && (
+                        <line x1="0" y1={refY} x2={closes.length - 1} y2={refY}
+                          stroke="rgba(236,227,213,0.12)" strokeWidth="1" vectorEffect="non-scaling-stroke" strokeDasharray="4,4" />
+                      )}
                     </>
                   );
                 })()}
@@ -497,19 +574,17 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
               /* ─── Candlestick Chart ─── */
               <svg width="100%" height="100%" viewBox={`0 0 ${chartData.length} 100`} preserveAspectRatio="none" style={{ display: "block" }}>
                 {(() => {
-                  const allHighs = chartData.map(p => p.high);
-                  const allLows = chartData.map(p => p.low);
-                  const candleMin = Math.min(...allLows);
-                  const candleMax = Math.max(...allHighs);
-                  const candleRange = candleMax - candleMin || 1;
-                  const toY = (v: number) => 100 - ((v - candleMin) / candleRange) * 90 - 5;
-                  const refY = toY(chartData[0].open);
+                  const { min, max, range } = chartInfo;
+                  const toY = (v: number) => 100 - ((v - min) / range) * 90 - 5;
+                  const refPrice = detail?.prevClose ?? chartData[0].open;
                   const bodyWidth = Math.max(0.3, 0.6);
 
                   return (
                     <>
-                      <line x1="0" y1={refY} x2={chartData.length} y2={refY}
-                        stroke="rgba(236,227,213,0.12)" strokeWidth="1" vectorEffect="non-scaling-stroke" strokeDasharray="4,4" />
+                      {refPrice >= min && refPrice <= max && (
+                        <line x1="0" y1={toY(refPrice)} x2={chartData.length} y2={toY(refPrice)}
+                          stroke="rgba(236,227,213,0.12)" strokeWidth="1" vectorEffect="non-scaling-stroke" strokeDasharray="4,4" />
+                      )}
                       {chartData.map((p, i) => {
                         const isUp = p.close >= p.open;
                         const color = isUp ? "var(--buy)" : "var(--sell)";
@@ -551,20 +626,49 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
               const total = chartType === "line" ? chartData.length - 1 : chartData.length;
               const xIdx = chartType === "line" ? hoverIndex : hoverIndex + 0.5;
               const xPct = (xIdx / total) * 100;
+              const ts = chartData[hoverIndex].timestamp;
+              const d = new Date(ts > 1e12 ? ts : ts * 1000);
+              const isIntraday = selectedPeriod === "1D";
+              const timeLabel = isIntraday
+                ? d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+                : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
               return (
-                <div style={{
-                  position: "absolute",
-                  left: `${xPct}%`,
-                  top: `${yPct}%`,
-                  width: 8, height: 8,
-                  borderRadius: "50%",
-                  background: chartColor,
-                  border: "2px solid var(--bg)",
-                  boxShadow: `0 0 0 1px ${chartColor}`,
-                  transform: "translate(-50%, -50%)",
-                  pointerEvents: "none",
-                  zIndex: 5,
-                }} />
+                <>
+                  <div style={{
+                    position: "absolute",
+                    left: `${xPct}%`,
+                    top: `${yPct}%`,
+                    width: 8, height: 8,
+                    borderRadius: "50%",
+                    background: chartColor,
+                    border: "2px solid var(--bg)",
+                    boxShadow: `0 0 0 1px ${chartColor}`,
+                    transform: "translate(-50%, -50%)",
+                    pointerEvents: "none",
+                    zIndex: 5,
+                  }} />
+                  {/* Time label pill — positioned inside chart near bottom */}
+                  <div style={{
+                    position: "absolute",
+                    left: `${xPct}%`,
+                    bottom: 6,
+                    transform: "translateX(-50%)",
+                    fontSize: 10,
+                    fontFamily: "var(--font-mono)",
+                    fontWeight: 600,
+                    color: "var(--text-primary)",
+                    background: "rgba(20,20,24,0.85)",
+                    border: "1px solid rgba(236,227,213,0.12)",
+                    borderRadius: 6,
+                    padding: "2px 8px",
+                    whiteSpace: "nowrap",
+                    pointerEvents: "none",
+                    zIndex: 5,
+                    backdropFilter: "blur(4px)",
+                  }}>
+                    {timeLabel}
+                  </div>
+                </>
               );
             })()}
           </>
@@ -613,7 +717,7 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
               style={{
                 padding: "8px 12px", fontSize: 12, fontFamily: "var(--font-mono)", fontWeight: 600,
                 color: isActive ? changeColor : "var(--text-muted)",
-                background: "transparent", border: "none",
+                background: "transparent", borderTop: "none", borderRight: "none", borderLeft: "none",
                 borderBottom: isActive ? `2px solid ${changeColor}` : "2px solid transparent",
                 cursor: "pointer", transition: "color 120ms ease", marginBottom: -1,
               }}
@@ -682,6 +786,132 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
           </button>
         )}
       </div>
+
+      {/* ─── Holdings Strip (Convex-backed) ─── */}
+      {detail && (() => {
+        const livePrice = detail.price || 0;
+
+        if (holding) {
+          const marketValue = livePrice * holding.shares;
+          const costBasis = holding.avgCostBasis * holding.shares;
+          const unrealizedPnl = marketValue - costBasis;
+          const unrealizedPct = costBasis > 0 ? (unrealizedPnl / costBasis) * 100 : 0;
+          const isProfit = unrealizedPnl >= 0;
+          const pnlColor = isProfit ? "var(--buy)" : "var(--sell)";
+          const pnlBg = isProfit ? "rgba(34,171,148,0.08)" : "rgba(229,77,77,0.08)";
+
+          return (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap",
+              padding: "14px 16px", marginBottom: 24, borderRadius: 10,
+              background: pnlBg,
+              border: `1px solid ${isProfit ? "rgba(34,171,148,0.15)" : "rgba(229,77,77,0.15)"}`,
+            }}>
+              <div style={{
+                display: "flex", alignItems: "center", gap: 8,
+                fontSize: 13, fontWeight: 700, fontFamily: "var(--font-mono)",
+                color: "var(--text-primary)",
+              }}>
+                <span style={{
+                  fontSize: 9, fontWeight: 700, textTransform: "uppercase" as const,
+                  letterSpacing: "0.04em", padding: "2px 8px", borderRadius: 6,
+                  background: "rgba(34,171,148,0.15)", color: "var(--buy)",
+                }}>
+                  holding
+                </span>
+                {holding.shares} shares @ {formatCurrency(holding.avgCostBasis)}
+              </div>
+
+              <div style={{ flex: 1 }} />
+
+              <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 9, fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" as const }}>Market Value</div>
+                  <div style={{ fontSize: 14, fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--text-primary)", fontVariantNumeric: "tabular-nums" }}>
+                    {formatCurrency(marketValue)}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 9, fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" as const }}>Unrealized P&L</div>
+                  <div style={{ fontSize: 14, fontFamily: "var(--font-mono)", fontWeight: 700, color: pnlColor, fontVariantNumeric: "tabular-nums" }}>
+                    {isProfit ? "+" : ""}{formatCurrency(unrealizedPnl)}
+                    <span style={{ fontSize: 11, fontWeight: 600, marginLeft: 6, opacity: 0.8 }}>
+                      ({isProfit ? "+" : ""}{unrealizedPct.toFixed(2)}%)
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={async () => {
+                    setHoldingActionPending(true);
+                    await removeHolding(ticker);
+                    setHoldingActionPending(false);
+                  }}
+                  disabled={holdingActionPending}
+                  style={{
+                    padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+                    fontFamily: "var(--font-mono)", cursor: "pointer",
+                    background: "rgba(229,77,77,0.1)", border: "1px solid rgba(229,77,77,0.2)",
+                    color: "var(--sell)", transition: "all 120ms ease",
+                    opacity: holdingActionPending ? 0.5 : 1,
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          );
+        }
+
+        // No holding — show "Add to Portfolio" button
+        return (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 12,
+            padding: "12px 16px", marginBottom: 24, borderRadius: 10,
+            background: "rgba(236,227,213,0.03)",
+            border: "1px solid var(--glass-border)",
+          }}>
+            <span style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontWeight: 500 }}>
+              Add to portfolio
+            </span>
+            <input
+              type="number"
+              min="0.01"
+              step="1"
+              value={addSharesInput}
+              onChange={(e) => setAddSharesInput(e.target.value)}
+              style={{
+                width: 70, padding: "5px 8px", borderRadius: 6, fontSize: 12,
+                fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums",
+                background: "rgba(236,227,213,0.06)", border: "1px solid var(--glass-border)",
+                color: "var(--text-primary)", textAlign: "center",
+              }}
+            />
+            <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+              shares @ {formatCurrency(livePrice)}
+            </span>
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={async () => {
+                const shares = parseFloat(addSharesInput);
+                if (!shares || shares <= 0 || !livePrice) return;
+                setHoldingActionPending(true);
+                await addHolding(ticker, shares, livePrice);
+                setHoldingActionPending(false);
+              }}
+              disabled={holdingActionPending}
+              style={{
+                padding: "6px 16px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+                fontFamily: "var(--font-mono)", cursor: "pointer",
+                background: "rgba(34,171,148,0.12)", border: "1px solid rgba(34,171,148,0.2)",
+                color: "var(--buy)", transition: "all 120ms ease",
+                opacity: holdingActionPending ? 0.5 : 1,
+              }}
+            >
+              Add Holding
+            </button>
+          </div>
+        );
+      })()}
 
       {/* ─── Fundamentals: progressive loading ─── */}
       {!detail ? <FundamentalsSkeleton /> : <>
@@ -882,7 +1112,7 @@ export default function StockDetailView({ ticker, onBack, onSelectTicker, onNavi
                     <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
                   </svg>
                 </button>
-                <button onClick={() => setThesis(null)} style={{
+                <button onClick={() => { setThesis(null); if (isAuthenticated) removeThesisMut({ ticker }); }} style={{
                   background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 4,
                 }} title="Delete thesis">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

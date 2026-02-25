@@ -1,0 +1,113 @@
+{
+  "name": "EMACrossoverStrategy",
+  "description": "EMA crossover strategy - buy when fast EMA crosses above slow EMA, sell when fast crosses below slow",
+  "code": "import pandas as pd\nimport numpy as np\nimport ta\nfrom engine.strategy import BaseStrategy, Signal\n\nclass EMACrossoverStrategy(BaseStrategy):\n    def on_bar(self, bar, history):\n        if len(history) < 27:\n            return None\n        \n        fast_ema = ta.trend.EMAIndicator(history['close'], window=12).ema_indicator()\n        slow_ema = ta.trend.EMAIndicator(history['close'], window=26).ema_indicator()\n        \n        current_fast = fast_ema.iloc[-1]\n        current_slow = slow_ema.iloc[-1]\n        prev_fast = fast_ema.iloc[-2]\n        prev_slow = slow_ema.iloc[-2]\n        \n        # Buy signal: fast EMA crosses above slow EMA\n        if prev_fast <= prev_slow and current_fast > current_slow:\n            return Signal(action='buy', size=1.0)\n        \n        # Sell signal: fast EMA crosses below slow EMA\n        if prev_fast >= prev_slow and current_fast < current_slow:\n            return Signal(action='sell', size=1.0)\n        \n        return None",
+  "parameters": {
+    "fast_period": 12,
+    "slow_period": 26
+  },
+  "symbol": "NQ=F",
+  "interval": "1d",
+  "created_at": "2026-02-24T00:10:39.182587",
+  "backtest_metrics": {
+    "total_trades": 8,
+    "win_rate": 0.125,
+    "loss_rate": 0.875,
+    "total_return": 20020.0,
+    "total_return_pct": 40.04,
+    "max_drawdown": -87810.0,
+    "max_drawdown_pct": -55.64,
+    "max_consecutive_losses": 7,
+    "max_consecutive_wins": 1,
+    "profit_factor": 1.23,
+    "sharpe_ratio": 0.99,
+    "avg_win": 107830.0,
+    "avg_loss": -12544.29,
+    "sortino_ratio": 6.71,
+    "calmar_ratio": 22.67,
+    "recovery_factor": 0.23,
+    "expectancy": 2502.5,
+    "expectancy_ratio": 0.2,
+    "payoff_ratio": 8.6,
+    "deflated_sharpe_ratio": 2.1434,
+    "dsr_pvalue": 0.016
+  },
+  "monte_carlo": {
+    "num_simulations": 1000,
+    "num_trades": 8,
+    "mean_return": 20020.0,
+    "median_return": 20020.0,
+    "std_return": 0.0,
+    "percentile_5": 20020.0,
+    "percentile_25": 20020.0,
+    "percentile_75": 20020.0,
+    "percentile_95": 20020.0,
+    "mean_max_drawdown": -69193.26,
+    "median_max_drawdown": -71330.0,
+    "worst_max_drawdown": -87810.0,
+    "percentile_95_drawdown": -87810.0,
+    "probability_of_ruin": 69.5,
+    "probability_of_profit": 100.0,
+    "equity_percentiles": {
+      "p5": [
+        50000.0,
+        29805.0,
+        14315.0,
+        430.0,
+        -11740.0,
+        -23705.0,
+        -28235.0,
+        -37810.0,
+        70020.0
+      ],
+      "p25": [
+        50000.0,
+        33520.0,
+        20230.0,
+        8455.0,
+        210.0,
+        -7445.0,
+        79815.0,
+        70240.0,
+        70020.0
+      ],
+      "p50": [
+        50000.0,
+        37075.0,
+        28460.0,
+        21335.0,
+        14355.0,
+        99615.0,
+        91560.0,
+        83905.0,
+        70020.0
+      ],
+      "p75": [
+        50000.0,
+        49780.0,
+        137635.0,
+        128060.0,
+        119810.0,
+        111360.0,
+        99790.0,
+        85510.0,
+        70020.0
+      ],
+      "p95": [
+        50000.0,
+        157830.0,
+        148255.0,
+        142120.0,
+        131555.0,
+        118660.0,
+        105705.0,
+        90215.0,
+        70020.0
+      ]
+    },
+    "method": "reshuffle",
+    "robustness_score": null,
+    "robustness_grade": null,
+    "sub_results": null
+  }
+}

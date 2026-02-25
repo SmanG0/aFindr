@@ -1,0 +1,99 @@
+{
+  "name": "EMA9x21CrossoverVBT",
+  "description": "EMA crossover - long when 9 EMA crosses above 21 EMA, exit when crosses below or hits 50 point stop loss",
+  "code": "import pandas as pd\nimport numpy as np\nimport ta\nfrom engine.vbt_strategy import VectorBTStrategy, TradeSignal\n\nclass EMA9x21CrossoverVBT(VectorBTStrategy):\n    def generate_signals(self, df):\n        fast = ta.trend.EMAIndicator(df['close'], window=self.params.get('fast_period', 9)).ema_indicator()\n        slow = ta.trend.EMAIndicator(df['close'], window=self.params.get('slow_period', 21)).ema_indicator()\n        stop_loss_points = self.params.get('stop_loss_points', 50)\n        \n        # Entry: 9 EMA crosses above 21 EMA\n        entries = ((fast > slow) & (fast.shift(1) <= slow.shift(1))).fillna(False)\n        \n        # Exit: 9 EMA crosses below 21 EMA OR stop loss hit\n        ema_cross_exit = ((fast < slow) & (fast.shift(1) >= slow.shift(1))).fillna(False)\n        \n        # Calculate stop loss exits\n        entry_prices = np.where(entries, df['close'], np.nan)\n        entry_prices = pd.Series(entry_prices, index=df.index).ffill()\n        stop_loss_level = entry_prices - stop_loss_points\n        stop_loss_exit = (df['close'] <= stop_loss_level) & ~pd.isna(entry_prices)\n        \n        exits = (ema_cross_exit | stop_loss_exit).fillna(False)\n        \n        return TradeSignal(entries=entries.values, exits=exits.values)",
+  "parameters": {
+    "fast_period": 9,
+    "slow_period": 21,
+    "stop_loss_points": 50
+  },
+  "symbol": "NQ=F",
+  "interval": "1d",
+  "created_at": "2026-02-24T00:00:16.724784",
+  "backtest_metrics": {
+    "total_trades": 5,
+    "win_rate": 0.2,
+    "loss_rate": 0.8,
+    "total_return": 18467.9,
+    "total_return_pct": 36.94,
+    "max_drawdown": -7553.16,
+    "max_drawdown_pct": -9.94,
+    "max_consecutive_losses": 3,
+    "max_consecutive_wins": 1,
+    "profit_factor": 2.93,
+    "sharpe_ratio": 4.79,
+    "avg_win": 28029.47,
+    "avg_loss": -2390.39,
+    "sortino_ratio": 37.6,
+    "calmar_ratio": 187.36,
+    "recovery_factor": 2.45,
+    "expectancy": 3693.58,
+    "expectancy_ratio": 1.55,
+    "payoff_ratio": 11.73,
+    "deflated_sharpe_ratio": 2.7125,
+    "dsr_pvalue": 0.0033
+  },
+  "monte_carlo": {
+    "num_simulations": 1000,
+    "num_trades": 5,
+    "mean_return": 18467.9,
+    "median_return": 18467.9,
+    "std_return": 0.0,
+    "percentile_5": 18467.9,
+    "percentile_25": 18467.9,
+    "percentile_75": 18467.9,
+    "percentile_95": 18467.9,
+    "mean_max_drawdown": -8064.26,
+    "median_max_drawdown": -8303.05,
+    "worst_max_drawdown": -9561.57,
+    "percentile_95_drawdown": -9561.57,
+    "probability_of_ruin": 0.0,
+    "probability_of_profit": 100.0,
+    "equity_percentiles": {
+      "p5": [
+        50000.0,
+        44963.89,
+        42955.48,
+        41594.51,
+        40438.43,
+        68467.9
+      ],
+      "p25": [
+        50000.0,
+        47991.59,
+        43807.81,
+        42446.84,
+        69623.98,
+        68467.9
+      ],
+      "p50": [
+        50000.0,
+        48639.03,
+        46835.51,
+        70984.95,
+        69828.87,
+        68467.9
+      ],
+      "p75": [
+        50000.0,
+        48843.92,
+        76021.06,
+        74660.09,
+        70476.31,
+        68467.9
+      ],
+      "p95": [
+        50000.0,
+        78029.47,
+        76873.39,
+        75512.42,
+        73504.01,
+        68467.9
+      ]
+    },
+    "method": "reshuffle",
+    "robustness_score": null,
+    "robustness_grade": null,
+    "sub_results": null
+  }
+}

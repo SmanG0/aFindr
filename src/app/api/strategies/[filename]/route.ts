@@ -8,7 +8,18 @@ export async function GET(
 ) {
   const { filename } = await params;
   try {
-    const res = await fetch(`${FASTAPI_URL}/api/strategies/${encodeURIComponent(filename)}`, { cache: "no-store" });
+    const headers: Record<string, string> = {};
+
+    // Forward Convex auth token to FastAPI
+    const token = _req.cookies.get("__convexAuthJWT")?.value;
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    const res = await fetch(`${FASTAPI_URL}/api/strategies/${encodeURIComponent(filename)}`, {
+      cache: "no-store",
+      headers,
+    });
     if (!res.ok) {
       return NextResponse.json({ error: "Strategy not found" }, { status: 404 });
     }

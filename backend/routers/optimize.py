@@ -7,9 +7,11 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from typing import Dict, List, Optional
+
+from rate_limit import limiter
 
 from data.fetcher import fetch_ohlcv
 from data.contracts import get_contract_config, CONTRACTS
@@ -32,7 +34,8 @@ class SweepRequest(BaseModel):
 
 
 @router.post("/sweep")
-async def run_sweep(req: SweepRequest):
+@limiter.limit("10/minute")
+async def run_sweep(request: Request, req: SweepRequest):
     """Run a vectorized parameter sweep using VectorBT."""
     if not HAS_VBT:
         return {"error": "VectorBT is not installed. Cannot run parameter sweep."}

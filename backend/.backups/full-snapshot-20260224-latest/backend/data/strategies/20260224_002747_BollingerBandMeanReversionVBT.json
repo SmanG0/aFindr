@@ -1,0 +1,89 @@
+{
+  "name": "BollingerBandMeanReversionVBT",
+  "description": "Mean reversion strategy - buy when price touches/goes below lower BB, sell when price touches/goes above upper BB, with 30-point stop loss",
+  "code": "import pandas as pd\nimport numpy as np\nimport ta\nfrom engine.vbt_strategy import VectorBTStrategy, TradeSignal\n\nclass BollingerBandMeanReversionVBT(VectorBTStrategy):\n    def generate_signals(self, df):\n        bb = ta.volatility.BollingerBands(df['close'], window=self.params.get('bb_period', 20), window_dev=self.params.get('bb_std', 2))\n        upper = bb.bollinger_hband()\n        lower = bb.bollinger_lband()\n        stop_loss_points = self.params.get('stop_loss_points', 30)\n        \n        # Entry: price touches or goes below lower band\n        entries = (df['close'] <= lower).fillna(False).values\n        \n        # Exit conditions: price touches/goes above upper band OR stop loss hit\n        price_exit = (df['close'] >= upper).fillna(False)\n        \n        # Calculate stop loss exit (price drops 30 points from entry)\n        # We need to track entry prices for stop loss calculation\n        entry_price = np.full(len(df), np.nan)\n        stop_loss_exit = np.zeros(len(df), dtype=bool)\n        \n        in_position = False\n        entry_px = 0\n        \n        for i in range(len(df)):\n            if not in_position and entries[i]:\n                in_position = True\n                entry_px = df['close'].iloc[i]\n                entry_price[i] = entry_px\n            elif in_position:\n                entry_price[i] = entry_px\n                # Stop loss: current price <= entry_price - stop_loss_points\n                if df['close'].iloc[i] <= entry_px - stop_loss_points:\n                    stop_loss_exit[i] = True\n                    in_position = False\n                elif price_exit.iloc[i]:\n                    in_position = False\n        \n        exits = (price_exit | stop_loss_exit).fillna(False).values\n        \n        return TradeSignal(entries=entries, exits=exits)",
+  "parameters": {
+    "bb_period": 20,
+    "bb_std": 2,
+    "stop_loss_points": 30
+  },
+  "symbol": "NQ=F",
+  "interval": "1d",
+  "created_at": "2026-02-24T00:27:47.276557",
+  "backtest_metrics": {
+    "total_trades": 3,
+    "win_rate": 1.0,
+    "loss_rate": 0.0,
+    "total_return": 88615.28,
+    "total_return_pct": 177.23,
+    "max_drawdown": 0.0,
+    "max_drawdown_pct": 0.0,
+    "max_consecutive_losses": 0,
+    "max_consecutive_wins": 3,
+    "profit_factor": Infinity,
+    "sharpe_ratio": 29.75,
+    "avg_win": 29538.43,
+    "avg_loss": 0.0,
+    "sortino_ratio": 0.0,
+    "calmar_ratio": 0.0,
+    "recovery_factor": 0.0,
+    "expectancy": 29538.43,
+    "expectancy_ratio": 29538.43,
+    "payoff_ratio": 0.0,
+    "deflated_sharpe_ratio": 1.9977,
+    "dsr_pvalue": 0.0229
+  },
+  "monte_carlo": {
+    "num_simulations": 1000,
+    "num_trades": 3,
+    "mean_return": 88615.28,
+    "median_return": 88615.28,
+    "std_return": 0.0,
+    "percentile_5": 88615.28,
+    "percentile_25": 88615.28,
+    "percentile_75": 88615.28,
+    "percentile_95": 88615.28,
+    "mean_max_drawdown": 0.0,
+    "median_max_drawdown": 0.0,
+    "worst_max_drawdown": 0.0,
+    "percentile_95_drawdown": 0.0,
+    "probability_of_ruin": 0.0,
+    "probability_of_profit": 100.0,
+    "equity_percentiles": {
+      "p5": [
+        50000.0,
+        59734.7,
+        90318.94,
+        138615.28
+      ],
+      "p25": [
+        50000.0,
+        59734.7,
+        90318.94,
+        138615.28
+      ],
+      "p50": [
+        50000.0,
+        80584.24,
+        108031.04,
+        138615.28
+      ],
+      "p75": [
+        50000.0,
+        98296.34,
+        128880.58,
+        138615.28
+      ],
+      "p95": [
+        50000.0,
+        98296.34,
+        128880.58,
+        138615.28
+      ]
+    },
+    "method": "reshuffle",
+    "robustness_score": null,
+    "robustness_grade": null,
+    "sub_results": null
+  }
+}

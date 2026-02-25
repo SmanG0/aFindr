@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
 
 from db import trades_repo
+from rate_limit import limiter
 
 router = APIRouter(prefix="/api/trading", tags=["trading"])
 
@@ -53,13 +54,15 @@ class SnapshotIn(BaseModel):
 # ── Endpoints ──
 
 @router.post("/positions")
-async def create_position(pos: PositionIn):
+@limiter.limit("60/minute")
+async def create_position(request: Request, pos: PositionIn):
     trades_repo.insert_position(pos.model_dump())
     return {"ok": True}
 
 
 @router.delete("/positions/{position_id}")
-async def close_position(position_id: str, body: ClosePositionIn):
+@limiter.limit("60/minute")
+async def close_position(request: Request, position_id: str, body: ClosePositionIn):
     pos = trades_repo.delete_position(position_id)
     if not pos:
         return {"error": "Position not found"}
@@ -77,7 +80,8 @@ async def close_position(position_id: str, body: ClosePositionIn):
 
 
 @router.post("/sync")
-async def sync_state(state: SyncState):
+@limiter.limit("60/minute")
+async def sync_state(request: Request, state: SyncState):
     """Full state sync from frontend."""
     # Sync positions
     positions = []
@@ -128,12 +132,15 @@ async def sync_state(state: SyncState):
 
 
 @router.get("/positions")
-async def list_positions():
+@limiter.limit("60/minute")
+async def list_positions(request: Request):
     return {"positions": trades_repo.get_open_positions()}
 
 
 @router.get("/trades")
+@limiter.limit("60/minute")
 async def list_trades(
+    request: Request,
     symbol: Optional[str] = Query(None),
     source: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
@@ -150,7 +157,9 @@ async def list_trades(
 
 
 @router.get("/analytics")
+@limiter.limit("60/minute")
 async def trade_analytics(
+    request: Request,
     symbol: Optional[str] = Query(None),
     since: Optional[int] = Query(None),
 ):
@@ -158,12 +167,14 @@ async def trade_analytics(
 
 
 @router.get("/analytics/equity-curve")
-async def equity_curve(limit: int = Query(500, ge=1, le=5000)):
+@limiter.limit("60/minute")
+async def equity_curve(request: Request, limit: int = Query(500, ge=1, le=5000)):
     snapshots = trades_repo.get_account_snapshots(limit=limit)
     return {"snapshots": snapshots}
 
 
 @router.post("/snapshot")
-async def take_snapshot(snap: SnapshotIn):
+@limiter.limit("60/minute")
+async def take_snapshot(request: Request, snap: SnapshotIn):
     trades_repo.insert_account_snapshot(snap.model_dump())
     return {"ok": True}

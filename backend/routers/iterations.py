@@ -8,9 +8,11 @@ POST /api/iterations/{session_id}/next — Run next iteration
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
+
+from rate_limit import limiter
 
 from agent.iterative_runner import (
     create_session,
@@ -40,7 +42,8 @@ class RejectRequest(BaseModel):
 
 
 @router.post("/start")
-async def start_session(req: StartRequest):
+@limiter.limit("30/minute")
+async def start_session(request: Request, req: StartRequest):
     """Start a new iterative agent session and run the first iteration."""
     state = create_session(
         user_prompt=req.prompt,
@@ -60,7 +63,8 @@ async def start_session(req: StartRequest):
 
 
 @router.get("/{session_id}")
-async def get_session_state(session_id: str):
+@limiter.limit("60/minute")
+async def get_session_state(request: Request, session_id: str):
     """Get the current state of an iterative session."""
     state = get_session(session_id)
     if not state:
@@ -69,7 +73,8 @@ async def get_session_state(session_id: str):
 
 
 @router.post("/{session_id}/approve")
-async def approve(session_id: str):
+@limiter.limit("60/minute")
+async def approve(request: Request, session_id: str):
     """Approve the current iteration."""
     result = approve_iteration(session_id)
     if not result:
@@ -80,7 +85,8 @@ async def approve(session_id: str):
 
 
 @router.post("/{session_id}/reject")
-async def reject(session_id: str, req: RejectRequest):
+@limiter.limit("60/minute")
+async def reject(request: Request, session_id: str, req: RejectRequest):
     """Reject the current iteration with feedback and auto-run next if available."""
     result = reject_iteration(session_id, req.feedback)
     if not result:
@@ -98,7 +104,8 @@ async def reject(session_id: str, req: RejectRequest):
 
 
 @router.post("/{session_id}/next")
-async def next_iteration(session_id: str):
+@limiter.limit("30/minute")
+async def next_iteration(request: Request, session_id: str):
     """Manually trigger the next iteration."""
     state = get_session(session_id)
     if not state:

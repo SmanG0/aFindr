@@ -197,6 +197,11 @@ body {
   border-radius: var(--radius-md);
 }
 
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 /* ─── Pulse Animations ─── */
 @keyframes pulse-glow {
   0%, 100% { box-shadow: 0 0 6px rgba(196,123,58,0.2); }
@@ -233,6 +238,28 @@ body {
   border-radius: 50%;
   background: inherit;
   animation: live-ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+/* ─── Dashboard Flow Lines ─── */
+.dash-flow-lines {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.dash-flow-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-dasharray: 800;
+  stroke-dashoffset: 800;
+  animation: dash-flow-draw linear infinite;
+}
+@keyframes dash-flow-draw {
+  0% { stroke-dashoffset: 800; }
+  100% { stroke-dashoffset: -800; }
 }
 
 /* ─── Chip / Badge ─── */
@@ -416,7 +443,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* ─── Panel Separator (ultra-thin Repla style) ─── */
+/* ─── Panel Separator (ultra-thin aFindr style) ─── */
 .panel-border-top {
   border-top: 0.667px solid rgba(236,227,213,0.15);
 }
@@ -664,4 +691,171 @@ body {
 /* Premium article layout */
 .news-article-premium {
   letter-spacing: 0.01em;
+}
+
+/* ─── Alphy Markdown (chat messages) ───
+   Modeled after ChatGPT / Claude production chat UIs.
+   react-markdown + remark-gfm renders into these classes. */
+
+/* ── Base ── */
+.alphy-markdown {
+  line-height: 1.75;
+}
+.alphy-markdown > *:first-child {
+  margin-top: 0 !important;
+}
+.alphy-markdown > *:last-child {
+  margin-bottom: 0 !important;
+}
+
+/* ── Paragraphs ── */
+.alphy-markdown p {
+  margin: 0 0 12px;
+}
+
+/* ── Inline emphasis ── */
+.alphy-markdown strong {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+.alphy-markdown em {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* ── Headings (ChatGPT scale: h1=1.5em, h2=1.25em, h3=1.1em) ── */
+.alphy-markdown h1,
+.alphy-markdown h2,
+.alphy-markdown h3 {
+  color: var(--text-primary);
+  line-height: 1.3;
+  margin: 20px 0 8px;
+}
+.alphy-markdown h1 {
+  font-size: 1.4em;
+  font-weight: 700;
+}
+.alphy-markdown h2 {
+  font-size: 1.2em;
+  font-weight: 700;
+}
+.alphy-markdown h3 {
+  font-size: 1.05em;
+  font-weight: 650;
+}
+
+/* ── Lists ── */
+.alphy-markdown ul,
+.alphy-markdown ol {
+  margin: 6px 0 12px;
+  padding-left: 20px;
+}
+.alphy-markdown li {
+  margin: 3px 0;
+}
+.alphy-markdown li::marker {
+  color: var(--text-muted);
+}
+.alphy-markdown li > p {
+  margin: 0;
+}
+
+/* ── Horizontal rules ── */
+.alphy-markdown hr {
+  border: none;
+  border-top: 1px solid rgba(236, 227, 213, 0.08);
+  margin: 16px 0;
+}
+
+/* ── Inline code (ChatGPT pill style: border-radius 11px) ── */
+.alphy-markdown code {
+  background: rgba(236, 227, 213, 0.07);
+  border-radius: 11px;
+  padding: 2px 7px;
+  font-size: 0.88em;
+  font-family: var(--font-mono);
+  color: var(--accent-bright);
+  white-space: nowrap;
+}
+
+/* ── Code blocks — styled by CodeBlock component, this is fallback ── */
+.alphy-markdown pre {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(236, 227, 213, 0.06);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin: 10px 0 14px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(236, 227, 213, 0.12) transparent;
+}
+.alphy-markdown pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre;
+  font-family: var(--font-mono);
+}
+
+/* ── Blockquotes (accent left border — like Claude) ── */
+.alphy-markdown blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 12px 0;
+  padding: 6px 14px;
+  color: var(--text-muted);
+  background: rgba(196, 123, 58, 0.04);
+  border-radius: 0 6px 6px 0;
+}
+.alphy-markdown blockquote p {
+  margin: 0;
+}
+
+/* ── Links ── */
+.alphy-markdown a {
+  color: var(--accent-bright);
+  text-decoration: none;
+}
+.alphy-markdown a:hover {
+  text-decoration: underline;
+}
+
+/* ── Tables (clean data-grid look) ── */
+.alphy-markdown table {
+  border-collapse: collapse;
+  margin: 10px 0 14px;
+  width: 100%;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.alphy-markdown thead {
+  border-bottom: 2px solid rgba(236, 227, 213, 0.1);
+}
+.alphy-markdown th {
+  color: var(--text-primary);
+  font-weight: 650;
+  font-size: 12px;
+  text-align: left;
+  padding: 8px 12px 6px;
+  white-space: nowrap;
+}
+.alphy-markdown td {
+  padding: 6px 12px;
+  text-align: left;
+  border-bottom: 1px solid rgba(236, 227, 213, 0.05);
+  color: var(--text-secondary);
+}
+.alphy-markdown tbody tr:hover {
+  background: rgba(236, 227, 213, 0.02);
+}
+.alphy-markdown tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── Strikethrough ── */
+.alphy-markdown del {
+  color: var(--text-muted);
+  text-decoration: line-through;
 }

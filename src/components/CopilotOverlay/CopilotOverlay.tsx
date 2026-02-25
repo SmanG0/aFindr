@@ -3,7 +3,15 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ChatMessage, Trade } from "@/lib/types";
-import type { ToolEvent } from "@/hooks/useAgentStream";
+import type { ToolEvent, TokenUsage } from "@/hooks/useAgentStream";
+import { ToolDataRenderer } from "@/components/AlphaPlayground/ArtifactBlocks";
+import type { AppPage } from "@/components/PageNav/PageNav";
+
+interface Conversation {
+  _id: string;
+  title: string;
+  updatedAt: number;
+}
 
 interface CopilotOverlayProps {
   isOpen: boolean;
@@ -14,8 +22,14 @@ interface CopilotOverlayProps {
   symbol: string;
   streamingText?: string;
   toolEvents?: ToolEvent[];
-  isAgentStreaming?: boolean;
   agentError?: string | null;
+  liveTokenUsage?: TokenUsage | null;
+  onNewChat?: () => void;
+  conversations?: Conversation[];
+  activeConversationId?: string | null;
+  onSelectConversation?: (id: string) => void;
+  onDeleteConversation?: (id: string) => void;
+  currentPage?: AppPage;
 }
 
 function getGreeting(): string {
@@ -58,6 +72,82 @@ function AlphyMascot({ size = 64, bounce = false }: { size?: number; bounce?: bo
   return mascot;
 }
 
+/** Per-message token usage badge (premium feature) */
+function TokenBadge({ tokenUsage }: { tokenUsage: NonNullable<ChatMessage["tokenUsage"]> }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : `${n}`;
+  const formatCost = (c: number) => c >= 0.01 ? `$${c.toFixed(2)}` : `$${c.toFixed(3)}`;
+
+  return (
+    <div
+      onClick={() => setExpanded((v) => !v)}
+      style={{
+        marginTop: 6,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        cursor: "pointer",
+        fontSize: 10,
+        color: "var(--text-muted)",
+        opacity: 0.6,
+        transition: "opacity 150ms ease",
+        userSelect: "none",
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
+      onMouseLeave={(e) => { if (!expanded) e.currentTarget.style.opacity = "0.6"; }}
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0, opacity: 0.7 }}>
+        <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
+      </svg>
+      <span>{formatTokens(tokenUsage.totalTokens)} tokens</span>
+      <span style={{ opacity: 0.4 }}>&middot;</span>
+      <span>{formatCost(tokenUsage.estimatedCost)}</span>
+      {expanded && (
+        <span style={{ marginLeft: 4, opacity: 0.7 }}>
+          In: {formatTokens(tokenUsage.inputTokens)} &middot; Out: {formatTokens(tokenUsage.outputTokens)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Live token counter shown during streaming */
+function LiveTokenCounter({ tokenUsage }: { tokenUsage: TokenUsage }) {
+  const total = tokenUsage.total_input_tokens + tokenUsage.total_output_tokens;
+  const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : `${n}`;
+  const formatCost = (c: number) => c >= 0.01 ? `$${c.toFixed(2)}` : `$${c.toFixed(3)}`;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.2 }}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        fontSize: 10,
+        color: "var(--text-muted)",
+        opacity: 0.7,
+        marginTop: 4,
+        fontFamily: "var(--font-mono)",
+      }}
+    >
+      <motion.svg
+        animate={{ rotate: 360 }}
+        transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+        width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" style={{ flexShrink: 0 }}
+      >
+        <path d="M21 12a9 9 0 1 1-6.22-8.56" />
+      </motion.svg>
+      <span>{formatTokens(total)} tokens</span>
+      <span style={{ opacity: 0.4 }}>&middot;</span>
+      <span>{formatCost(tokenUsage.estimated_cost_usd)}</span>
+    </motion.div>
+  );
+}
+
 /** PineScript code display with copy-to-clipboard button */
 function PineScriptBlock({ result }: { result: NonNullable<ChatMessage["pinescriptResult"]> }) {
   const [copied, setCopied] = useState(false);
@@ -72,7 +162,10 @@ function PineScriptBlock({ result }: { result: NonNullable<ChatMessage["pinescri
   return (
     <div style={{ marginTop: 12, background: "rgba(236,227,213,0.04)", borderRadius: 8, border: "1px solid rgba(236,227,213,0.08)", overflow: "hidden" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderBottom: "1px solid rgba(236,227,213,0.06)", fontSize: 11, color: "var(--text-muted)" }}>
-        <span style={{ fontWeight: 600, color: "var(--accent)" }}>PineScript v5 — {result.name}</span>
+        <span style={{ fontWeight: 600, color: "var(--accent)", display: "flex", alignItems: "center", gap: 6 }}>
+          PineScript v5 — {result.name}
+          <span style={{ fontSize: 7, fontWeight: 800, fontFamily: "var(--font-mono)", padding: "1px 4px", borderRadius: 3, background: "linear-gradient(135deg, rgba(196,123,58,0.2), rgba(212,175,55,0.2))", color: "#d4af37", letterSpacing: "0.06em", lineHeight: 1.3, border: "1px solid rgba(212,175,55,0.15)" }}>PRO</span>
+        </span>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span className="chip chip-neutral" style={{ fontSize: 10, padding: "2px 8px" }}>{result.script_type}</span>
           <button onClick={handleCopy} style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid rgba(236,227,213,0.1)", background: copied ? "rgba(34,197,94,0.15)" : "rgba(236,227,213,0.06)", color: copied ? "var(--buy)" : "var(--text-secondary)", cursor: "pointer", fontSize: 10, fontFamily: "var(--font-mono)" }}>
@@ -98,8 +191,9 @@ function BacktestResultBlock({ result }: { result: NonNullable<ChatMessage["stra
   return (
     <div style={{ marginTop: 12, background: "rgba(236,227,213,0.04)", borderRadius: 8, border: "1px solid rgba(236,227,213,0.08)", overflow: "hidden" }}>
       {result.strategyName && (
-        <div style={{ padding: "6px 12px", borderBottom: "1px solid rgba(236,227,213,0.06)", fontSize: 11, fontWeight: 600, color: "var(--accent)", fontFamily: "var(--font-mono)" }}>
+        <div style={{ padding: "6px 12px", borderBottom: "1px solid rgba(236,227,213,0.06)", fontSize: 11, fontWeight: 600, color: "var(--accent)", fontFamily: "var(--font-mono)", display: "flex", alignItems: "center", gap: 6 }}>
           {result.strategyName}
+          <span style={{ fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3, background: "linear-gradient(135deg, rgba(196,123,58,0.2), rgba(212,175,55,0.2))", color: "#d4af37", letterSpacing: "0.06em", lineHeight: 1.3, border: "1px solid rgba(212,175,55,0.15)" }}>PRO</span>
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 0, borderBottom: "1px solid rgba(236,227,213,0.06)" }}>
@@ -156,34 +250,46 @@ const TOOL_LABELS: Record<string, string> = {
   run_backtest: "Running backtest",
   generate_strategy: "Generating strategy",
   generate_pinescript: "Writing PineScript",
-  fetch_market_data: "Fetching market data",
-  run_monte_carlo: "Running Monte Carlo simulation",
-  run_walk_forward: "Running walk-forward analysis",
+  fetch_market_data: "Pulling market data",
+  run_monte_carlo: "Running Monte Carlo sim",
+  run_walk_forward: "Walk-forward analysis",
+  run_parameter_sweep: "Sweeping parameters",
+  run_preset_strategy: "Running preset strategy",
   analyze_trades: "Analyzing trades",
   optimize_parameters: "Optimizing parameters",
   search_rag: "Searching knowledge base",
   validate_strategy_code: "Validating strategy",
   execute_strategy_code: "Executing strategy",
-  fetch_options_chain: "Fetching options chain",
+  fetch_options_chain: "Pulling options chain",
   fetch_insider_activity: "Checking insider activity",
-  fetch_economic_data: "Fetching economic data",
-  fetch_earnings_calendar: "Checking earnings calendar",
-  fetch_company_news_feed: "Fetching company news",
-  search_news: "Searching news",
+  fetch_economic_data: "Pulling economic data",
+  fetch_earnings_calendar: "Checking earnings",
+  fetch_company_news_feed: "Scanning company news",
+  search_news: "Searching headlines",
   get_stock_info: "Looking up stock info",
-  fetch_news: "Fetching news feed",
+  fetch_news: "Scanning news feed",
+  get_contract_info: "Getting contract info",
+  list_saved_strategies: "Loading strategies",
+  load_saved_strategy: "Loading strategy",
+  list_preset_strategies: "Listing presets",
+  get_trading_summary: "Getting trade summary",
+  query_trade_history: "Querying trade history",
+  get_backtest_history: "Loading backtest history",
+  create_chart_script: "Creating chart script",
+  query_prediction_markets: "Checking prediction markets",
+  fetch_labor_data: "Pulling labor data",
 };
 
 // ─── Rotating thinking phrases ───
 const THINKING_PHRASES = [
-  "Thinking",
-  "Analyzing",
-  "Processing",
-  "Discombobulating",
-  "Crunching numbers",
-  "Consulting the charts",
   "Reading the tape",
-  "Synthesizing",
+  "Scanning levels",
+  "Measuring the move",
+  "Checking the spread",
+  "Sizing the position",
+  "Marking the chart",
+  "Running the numbers",
+  "Pulling the data",
 ];
 
 function useRotatingPhrase(active: boolean) {
@@ -199,120 +305,147 @@ function useRotatingPhrase(active: boolean) {
   return THINKING_PHRASES[index];
 }
 
-/** Claude/Cursor-style collapsible tool steps */
-function ToolStepsDropdown({ toolEvents }: { toolEvents: ToolEvent[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const activeTools = toolEvents.filter((t) => t.status === "running");
-  const completedTools = toolEvents.filter((t) => t.status !== "running");
-  const latestActive = activeTools[activeTools.length - 1];
+/** Deduplicate tool events — collapse consecutive same-tool calls into one with count */
+function dedupeToolEvents(events: ToolEvent[]): (ToolEvent & { count: number })[] {
+  const result: (ToolEvent & { count: number })[] = [];
+  for (const te of events) {
+    const last = result[result.length - 1];
+    if (last && last.tool_name === te.tool_name) {
+      last.count++;
+      // Keep the latest status (if any is still running, show running)
+      if (te.status === "running") last.status = "running";
+      else if (last.status !== "running") last.status = te.status;
+    } else {
+      result.push({ ...te, count: 1 });
+    }
+  }
+  return result;
+}
 
-  // Summary label: show active tool or completed count
-  const summaryLabel = latestActive
-    ? TOOL_LABELS[latestActive.tool_name] || latestActive.tool_name.replace(/_/g, " ")
-    : `${completedTools.length} step${completedTools.length !== 1 ? "s" : ""} completed`;
+/** Animated checkmark that draws itself in */
+function AnimatedCheck() {
+  return (
+    <motion.svg
+      width="10" height="10" viewBox="0 0 24 24" fill="none"
+      stroke="var(--buy)" strokeWidth="2.5" style={{ flexShrink: 0 }}
+    >
+      <motion.polyline
+        points="20 6 9 17 4 12"
+        initial={{ pathLength: 0, opacity: 0 }}
+        animate={{ pathLength: 1, opacity: 1 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+        style={{ strokeDasharray: 1, strokeDashoffset: 0 }}
+      />
+    </motion.svg>
+  );
+}
+
+/** Inline tool step chips that appear as tools are called */
+function ToolStepsInline({ toolEvents }: { toolEvents: ToolEvent[] }) {
+  const deduped = dedupeToolEvents(toolEvents);
 
   return (
-    <div style={{ marginBottom: 4 }}>
-      {/* Summary row (always visible) */}
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        style={{
-          display: "flex", alignItems: "center", gap: 6, width: "100%",
-          padding: "4px 0", background: "none", border: "none", cursor: "pointer",
-          textAlign: "left",
-        }}
-      >
-        {/* Spinner or chevron */}
-        {latestActive ? (
-          <motion.div
-            animate={{ rotate: 360 }}
-            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-            style={{ width: 12, height: 12, flexShrink: 0 }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5">
-              <path d="M21 12a9 9 0 1 1-6.22-8.56" />
-            </svg>
-          </motion.div>
-        ) : (
-          <svg
-            width="12" height="12" viewBox="0 0 24 24" fill="none"
-            stroke="var(--text-muted)" strokeWidth="2"
-            style={{ flexShrink: 0, transform: expanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 150ms ease" }}
-          >
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
-        )}
+    <div style={{ display: "flex", flexDirection: "column", gap: 2, marginBottom: 6 }}>
+      <AnimatePresence initial={false}>
+        {deduped.map((te) => {
+          const label = TOOL_LABELS[te.tool_name] || te.tool_name.replace(/_/g, " ");
+          const isRunning = te.status === "running";
+          const isDone = te.status === "success";
+          const isError = te.status === "error" || te.status === "denied";
 
-        <span style={{
-          fontSize: 12, color: latestActive ? "var(--text-secondary)" : "var(--text-muted)",
-          fontWeight: 500, flex: 1,
-        }}>
-          {summaryLabel}{latestActive ? "..." : ""}
-        </span>
-
-        {/* Step count badge */}
-        {toolEvents.length > 1 && (
-          <span style={{
-            fontSize: 10, color: "var(--text-disabled)",
-            fontFamily: "var(--font-mono)",
-          }}>
-            {completedTools.length}/{toolEvents.length}
-          </span>
-        )}
-      </button>
-
-      {/* Expanded detail list */}
-      <AnimatePresence>
-        {expanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            style={{ overflow: "hidden", paddingLeft: 18 }}
-          >
-            {toolEvents.map((te) => {
-              const label = TOOL_LABELS[te.tool_name] || te.tool_name.replace(/_/g, " ");
-              const isRunning = te.status === "running";
-              const isDone = te.status === "success";
-              return (
-                <div
-                  key={te.id}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 6,
-                    padding: "3px 0", fontSize: 11,
-                    color: isRunning ? "var(--text-secondary)" : "var(--text-muted)",
-                  }}
+          return (
+            <motion.div
+              key={te.id}
+              initial={{ opacity: 0, x: -8, height: 0 }}
+              animate={{ opacity: 1, x: 0, height: "auto" }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "4px 0", fontSize: 12, overflow: "hidden",
+              }}
+            >
+              {/* Status icon */}
+              {isRunning ? (
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+                  style={{ width: 10, height: 10, flexShrink: 0 }}
                 >
-                  {isRunning ? (
-                    <motion.div
-                      animate={{ rotate: 360 }}
-                      transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                      style={{ width: 10, height: 10, flexShrink: 0 }}
-                    >
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5">
-                        <path d="M21 12a9 9 0 1 1-6.22-8.56" />
-                      </svg>
-                    </motion.div>
-                  ) : isDone ? (
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--buy)" strokeWidth="2.5" style={{ flexShrink: 0 }}>
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                  ) : (
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--sell)" strokeWidth="2.5" style={{ flexShrink: 0 }}>
-                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  )}
-                  <span>{label}</span>
-                </div>
-              );
-            })}
-          </motion.div>
-        )}
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5">
+                    <path d="M21 12a9 9 0 1 1-6.22-8.56" />
+                  </svg>
+                </motion.div>
+              ) : isDone ? (
+                <AnimatedCheck />
+              ) : isError ? (
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--sell)" strokeWidth="2.5" style={{ flexShrink: 0 }}>
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              ) : null}
+
+              {/* Label */}
+              <span style={{
+                color: isRunning ? "var(--text-secondary)" : "var(--text-muted)",
+                fontWeight: isRunning ? 500 : 400,
+                transition: "color 0.2s ease",
+              }}>
+                {label}{te.count > 1 ? ` (${te.count})` : ""}
+              </span>
+            </motion.div>
+          );
+        })}
       </AnimatePresence>
     </div>
   );
 }
+
+/** Relative time label: "just now", "2m ago", "3h ago", "yesterday", "Feb 20" */
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// ─── Context-aware suggested prompts ───
+const CONTEXT_PROMPTS: Record<string, string[]> = {
+  trade: [
+    "Generate an EMA crossover strategy",
+    "Analyze my recent trade performance",
+    "Create a RSI divergence indicator",
+  ],
+  portfolio: [
+    "What's the earnings outlook for this stock?",
+    "Show me insider activity",
+    "What if I bought after the last earnings dip?",
+  ],
+  dashboard: [
+    "Give me a market overview",
+    "What's moving today?",
+    "Summarize my portfolio performance",
+  ],
+  news: [
+    "What's the market impact of these headlines?",
+    "Which sectors are most affected?",
+    "Any trading opportunities from this news?",
+  ],
+  settings: [
+    "Help me optimize my trading settings",
+    "What risk parameters should I use?",
+    "Explain one-click trading",
+  ],
+};
+const DEFAULT_PROMPTS = [
+  "What's the market looking like today?",
+  "Research AAPL's recent performance",
+  "Help me analyze a trade idea",
+];
 
 export default function CopilotOverlay({
   isOpen,
@@ -322,21 +455,35 @@ export default function CopilotOverlay({
   isLoading,
   streamingText = "",
   toolEvents = [],
-  isAgentStreaming = false,
   agentError = null,
+  liveTokenUsage,
+  onNewChat,
+  conversations = [],
+  activeConversationId,
+  onSelectConversation,
+  onDeleteConversation,
+  currentPage,
 }: CopilotOverlayProps) {
   const [input, setInput] = useState("");
+  const [showHistory, setShowHistory] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const prevMessageCountRef = useRef(messages.length);
   const thinkingPhrase = useRotatingPhrase(isLoading && !streamingText && toolEvents.length === 0);
 
   useEffect(() => {
     if (isOpen) setTimeout(() => textareaRef.current?.focus(), 200);
   }, [isOpen]);
 
+  // Only auto-scroll when messages change or streaming updates — NOT on panel open/close
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading, streamingText, toolEvents.length]);
+    const messageCountChanged = messages.length !== prevMessageCountRef.current;
+    prevMessageCountRef.current = messages.length;
+    // Scroll on new messages, streaming text, or loading state changes
+    if (messageCountChanged || streamingText || isLoading) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages.length, isLoading, streamingText]);
 
   const handleSubmit = useCallback(() => {
     const trimmed = input.trim();
@@ -354,18 +501,18 @@ export default function CopilotOverlay({
 
   return (
     <motion.div
-      initial={{ width: 0, opacity: 0 }}
-      animate={{ width: 420, opacity: 1 }}
-      exit={{ width: 0, opacity: 0 }}
+      initial={false}
+      animate={{ width: isOpen ? 420 : 0, opacity: isOpen ? 1 : 0 }}
       transition={{ type: "spring", damping: 30, stiffness: 300 }}
       style={{
         flexShrink: 0,
         overflow: "hidden",
         background: "var(--bg)",
-        borderRight: "1px solid rgba(236,227,213,0.12)",
+        borderRight: isOpen ? "1px solid rgba(236,227,213,0.12)" : "none",
         display: "flex",
         flexDirection: "column",
         height: "100%",
+        pointerEvents: isOpen ? "auto" : "none",
       }}
     >
       <div style={{ width: 420, minWidth: 420, display: "flex", flexDirection: "column", height: "100%" }}>
@@ -376,10 +523,30 @@ export default function CopilotOverlay({
               <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>Alphy</div>
               <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Trading Assistant</div>
             </div>
-            <button className="nav-pill" style={{ padding: "4px 8px", fontSize: 10 }}>
+            <button
+              onClick={() => { onNewChat?.(); setShowHistory(false); }}
+              className="nav-pill"
+              style={{ padding: "4px 8px", fontSize: 10 }}
+              title="New chat"
+            >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
               New
             </button>
+            {conversations.length > 0 && (
+              <button
+                onClick={() => setShowHistory((v) => !v)}
+                className="nav-pill"
+                style={{
+                  padding: "4px 8px", fontSize: 10,
+                  background: showHistory ? "rgba(236,227,213,0.1)" : undefined,
+                }}
+                title="Chat history"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+                </svg>
+              </button>
+            )}
             <button
               onClick={onClose}
               style={{
@@ -392,6 +559,81 @@ export default function CopilotOverlay({
             </button>
           </div>
 
+          {/* ─── Chat History Panel ─── */}
+          <AnimatePresence>
+            {showHistory && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2, ease: "easeOut" }}
+                style={{ overflow: "hidden", flexShrink: 0, borderBottom: "1px solid rgba(236,227,213,0.08)" }}
+              >
+                <div style={{ maxHeight: 260, overflowY: "auto", padding: "4px 0" }}>
+                  {conversations.map((conv) => {
+                    const isActive = conv._id === activeConversationId;
+                    return (
+                      <div
+                        key={conv._id}
+                        onClick={() => {
+                          onSelectConversation?.(conv._id);
+                          setShowHistory(false);
+                        }}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 10,
+                          padding: "10px 16px", cursor: "pointer",
+                          background: isActive ? "rgba(196,123,58,0.1)" : "transparent",
+                          borderLeft: isActive ? "2px solid var(--accent)" : "2px solid transparent",
+                          transition: "background 100ms ease",
+                        }}
+                        onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "rgba(236,227,213,0.04)"; }}
+                        onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{
+                            fontSize: 12, fontWeight: isActive ? 600 : 400,
+                            color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
+                            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                          }}>
+                            {conv.title}
+                          </div>
+                          <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
+                            {relativeTime(conv.updatedAt)}
+                          </div>
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteConversation?.(conv._id);
+                          }}
+                          style={{
+                            width: 24, height: 24, borderRadius: 4, border: "none",
+                            background: "transparent", color: "var(--text-muted)",
+                            cursor: "pointer", display: "flex", alignItems: "center",
+                            justifyContent: "center", opacity: 0.4, flexShrink: 0,
+                            transition: "opacity 100ms ease",
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.4"; }}
+                          title="Delete conversation"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                          </svg>
+                        </button>
+                      </div>
+                    );
+                  })}
+                  {conversations.length === 0 && (
+                    <div style={{ padding: "16px", textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>
+                      No conversations yet
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {/* ─── Messages ─── */}
           <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
             {messages.length === 0 ? (
@@ -401,14 +643,16 @@ export default function CopilotOverlay({
                   {getGreeting()}!
                 </div>
                 <p style={{ color: "var(--text-muted)", fontSize: 12, textAlign: "center", maxWidth: 280, lineHeight: 1.5 }}>
-                  Ask me to generate strategies, analyze your trades, or create PineScript indicators.
+                  {currentPage === "portfolio"
+                    ? "Ask me about earnings, news, options, or test trading scenarios."
+                    : currentPage === "news"
+                      ? "Ask me about the news you're seeing or its market impact."
+                      : currentPage === "dashboard"
+                        ? "Ask me about your portfolio, market conditions, or trading ideas."
+                        : "Ask me to generate strategies, analyze your trades, or create PineScript indicators."}
                 </p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%", maxWidth: 300, marginTop: 8 }}>
-                  {[
-                    "Generate an EMA crossover strategy",
-                    "Analyze my recent trade performance",
-                    "Create a RSI divergence indicator",
-                  ].map((prompt) => (
+                  {(CONTEXT_PROMPTS[currentPage ?? ""] ?? DEFAULT_PROMPTS).map((prompt) => (
                     <button
                       key={prompt}
                       onClick={() => onSendMessage(prompt)}
@@ -428,8 +672,14 @@ export default function CopilotOverlay({
               </div>
             ) : (
               <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
-                {messages.map((msg) => (
-                  <div key={msg.id} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start", marginBottom: 10 }}>
+                {messages.map((msg, msgIdx) => (
+                  <motion.div
+                    key={msg.id}
+                    initial={msg.role === "assistant" ? { opacity: 0, y: 6 } : false}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.25, ease: "easeOut" }}
+                    style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start", marginBottom: 10 }}
+                  >
                     {msg.role === "assistant" && (
                       <div style={{ width: 24, height: 24, flexShrink: 0, marginRight: 8, marginTop: 2 }}>
                         <AlphyMascot size={24} />
@@ -444,13 +694,44 @@ export default function CopilotOverlay({
                       color: "var(--text-primary)", fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap",
                     }}>
                       {msg.content}
-                      {msg.pinescriptResult && <PineScriptBlock result={msg.pinescriptResult} />}
-                      {msg.strategyResult && <BacktestResultBlock result={msg.strategyResult} />}
+                      {msg.pinescriptResult && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10, scale: 0.97 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          transition={{ duration: 0.35, ease: "easeOut", delay: msgIdx === messages.length - 1 ? 0.1 : 0 }}
+                        >
+                          <PineScriptBlock result={msg.pinescriptResult} />
+                        </motion.div>
+                      )}
+                      {msg.strategyResult && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10, scale: 0.97 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          transition={{ duration: 0.35, ease: "easeOut", delay: msgIdx === messages.length - 1 ? 0.1 : 0 }}
+                        >
+                          <BacktestResultBlock result={msg.strategyResult} />
+                        </motion.div>
+                      )}
+                      {/* Rich tool data artifacts (options chains, earnings, news, etc.) */}
+                      {msg.toolData && msg.toolData.length > 0 && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10, scale: 0.97 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          transition={{ duration: 0.35, ease: "easeOut", delay: msgIdx === messages.length - 1 ? 0.15 : 0 }}
+                          style={{ maxWidth: "100%", overflowX: "auto" }}
+                        >
+                          <ToolDataRenderer toolData={msg.toolData} />
+                        </motion.div>
+                      )}
+                      {/* Per-message token usage badge */}
+                      {msg.role === "assistant" && msg.tokenUsage && (
+                        <TokenBadge tokenUsage={msg.tokenUsage} />
+                      )}
                     </div>
-                  </div>
+                  </motion.div>
                 ))}
                 {/* ─── Agent Error ─── */}
-                {agentError && !isLoading && (
+                {agentError && (
                   <div style={{ display: "flex", gap: 8, padding: "4px 0" }}>
                     <div style={{ width: 24, height: 24, flexShrink: 0, marginTop: 2 }}>
                       <AlphyMascot size={24} />
@@ -466,35 +747,60 @@ export default function CopilotOverlay({
                 )}
                 {/* ─── Streaming / Loading UI ─── */}
                 {isLoading && (
-                  <div style={{ padding: "4px 0" }}>
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.2 }}
+                    style={{ padding: "4px 0" }}
+                  >
                     <div style={{ display: "flex", gap: 8 }}>
                       <div style={{ width: 24, height: 24, flexShrink: 0, marginTop: 2 }}>
                         <AlphyMascot size={24} />
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        {/* Collapsible tool steps (Claude/Cursor style) */}
+                        {/* Inline tool step chips */}
                         {toolEvents.length > 0 && (
-                          <ToolStepsDropdown toolEvents={toolEvents} />
+                          <ToolStepsInline toolEvents={toolEvents} />
                         )}
 
                         {/* Streaming text (live tokens) */}
                         {streamingText ? (
-                          <div style={{
-                            fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)",
-                            whiteSpace: "pre-wrap", marginTop: toolEvents.length > 0 ? 6 : 0,
-                          }}>
+                          <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            transition={{ duration: 0.15 }}
+                            style={{
+                              fontSize: 13, lineHeight: 1.6, color: "var(--text-primary)",
+                              whiteSpace: "pre-wrap", marginTop: toolEvents.length > 0 ? 2 : 0,
+                            }}
+                          >
                             {streamingText}
                             <motion.span
-                              animate={{ opacity: [1, 0] }}
-                              transition={{ duration: 0.6, repeat: Infinity }}
-                              style={{ color: "var(--accent)" }}
-                            >
-                              |
-                            </motion.span>
-                          </div>
+                              animate={{ opacity: [1, 0.2] }}
+                              transition={{ duration: 0.5, repeat: Infinity, repeatType: "reverse" }}
+                              style={{
+                                display: "inline-block",
+                                width: 7, height: 16, marginLeft: 1,
+                                background: "var(--accent)",
+                                borderRadius: 1,
+                                verticalAlign: "text-bottom",
+                              }}
+                            />
+                          </motion.div>
                         ) : toolEvents.length === 0 ? (
                           /* Thinking indicator (before anything arrives) */
-                          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
+                            {/* Three-dot pulse */}
+                            <div style={{ display: "flex", gap: 3 }}>
+                              {[0, 1, 2].map((i) => (
+                                <motion.div
+                                  key={i}
+                                  animate={{ opacity: [0.3, 1, 0.3], scale: [0.85, 1, 0.85] }}
+                                  transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.15 }}
+                                  style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--accent)" }}
+                                />
+                              ))}
+                            </div>
                             <AnimatePresence mode="wait">
                               <motion.span
                                 key={thinkingPhrase}
@@ -509,9 +815,13 @@ export default function CopilotOverlay({
                             </AnimatePresence>
                           </div>
                         ) : null}
+                        {/* Live token counter */}
+                        {liveTokenUsage && (
+                          <LiveTokenCounter tokenUsage={liveTokenUsage} />
+                        )}
                       </div>
                     </div>
-                  </div>
+                  </motion.div>
                 )}
                 <div ref={messagesEndRef} />
               </div>

@@ -5,17 +5,43 @@ import io
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
+
+from rate_limit import limiter
 
 from db import trades_repo, backtest_repo
 from engine.persistence import load_strategy
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
+# ---------------------------------------------------------------------------
+# CSV formula injection protection
+# ---------------------------------------------------------------------------
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _sanitize_csv_value(value) -> str:
+    """Escape values that start with formula-triggering characters.
+
+    Spreadsheet applications (Excel, Google Sheets, LibreOffice Calc) treat
+    cells starting with =, +, -, or @ as formulas. Prepending a single quote
+    neutralises this without altering the logical content.
+    """
+    if isinstance(value, str) and value and value[0] in _FORMULA_PREFIXES:
+        return f"'{value}"
+    return value
+
+
+def _sanitize_row(row: dict) -> dict:
+    """Apply formula-injection escaping to every value in a row dict."""
+    return {k: _sanitize_csv_value(v) for k, v in row.items()}
+
 
 @router.get("/trades/csv")
+@limiter.limit("30/minute")
 async def export_trades_csv(
+    request: Request,
     symbol: Optional[str] = Query(None),
     source: Optional[str] = Query(None),
     backtest_run_id: Optional[str] = Query(None),
@@ -43,7 +69,7 @@ async def export_trades_csv(
     writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     for t in trade_list:
-        writer.writerow(t)
+        writer.writerow(_sanitize_row(t))
 
     content = output.getvalue().encode("utf-8")
     return StreamingResponse(
@@ -54,7 +80,8 @@ async def export_trades_csv(
 
 
 @router.get("/backtest/{run_id}/json")
-async def export_backtest_json(run_id: str):
+@limiter.limit("30/minute")
+async def export_backtest_json(request: Request, run_id: str):
     """Export full backtest as JSON (metrics, trades, equity curve, Monte Carlo)."""
     run = backtest_repo.get_backtest_run(run_id)
     if not run:
@@ -78,7 +105,8 @@ async def export_backtest_json(run_id: str):
 
 
 @router.get("/strategy/{filename}/json")
-async def export_strategy_json(filename: str):
+@limiter.limit("30/minute")
+async def export_strategy_json(request: Request, filename: str):
     """Export a saved strategy as JSON."""
     data = load_strategy(filename)
     if not data:

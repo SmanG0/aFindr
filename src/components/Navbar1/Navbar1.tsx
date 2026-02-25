@@ -3,12 +3,9 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { AppPage } from "@/components/PageNav/PageNav";
-
-function formatTime(timestamp: number): string {
-  const ms = timestamp > 1e12 ? timestamp : timestamp * 1000;
-  const d = new Date(ms);
-  return d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
+import NotificationBell from "@/components/Notifications/NotificationBell";
+import AlertsPanel from "@/components/Alerts/AlertsPanel";
+import type { Id } from "../../../convex/_generated/dataModel";
 
 function AlphyMascot({ size = 34 }: { size?: number }) {
   return (
@@ -47,16 +44,18 @@ interface Navbar1Props {
   onOpenSymbols: () => void;
   onOpenSettings: () => void;
   userName?: string;
+  userId?: Id<"users"> | null;
 }
 
 // Main nav tabs — Settings is NOT a tab, only accessible via gear icon
-const NAV_TABS: { id: AppPage; label: string }[] = ([
+const NAV_TABS: { id: AppPage; label: string; premium?: boolean }[] = ([
   { id: "dashboard", label: "Dashboard" },
   { id: "portfolio", label: "Portfolio" },
   { id: "trade", label: "Trade" },
   { id: "news", label: "News" },
-  { id: "alpha", label: "Alpha Lab" },
-] as { id: AppPage; label: string }[]).filter((t) => t.id !== "settings");
+  { id: "journal", label: "Journal" },
+  { id: "alpha", label: "Alpha Lab", premium: true },
+] as { id: AppPage; label: string; premium?: boolean }[]).filter((t) => t.id !== "settings");
 
 export default function Navbar1({
   activePage,
@@ -66,15 +65,14 @@ export default function Navbar1({
   onOpenSymbols,
   onOpenSettings,
   userName,
+  userId: _userId,
 }: Navbar1Props) {
   void _onOpenRiskMgmt;
-  const [showNotifications, setShowNotifications] = useState(false);
+  void _userId;
+  const [showAlerts, setShowAlerts] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [logoHovered, setLogoHovered] = useState(false);
-  const [notifications] = useState([
-    { id: 1, type: "trade" as const, message: "Trading engine initialized", time: Date.now() - 60000 },
-    { id: 2, type: "system" as const, message: "Connected to data feed", time: Date.now() - 30000 },
-  ]);
+  const isAlphaLab = activePage === "alpha";
 
   const displayName = userName || "User";
   const initials = displayName.charAt(0).toUpperCase();
@@ -93,12 +91,13 @@ export default function Navbar1({
           flexShrink: 0,
         }}
       >
-        {/* ─── Alphy Mascot (left corner) ─── */}
+        {/* ─── Alphy Mascot (left corner) — disabled on Alpha Lab ─── */}
         <motion.button
-          onClick={onOpenCopilot}
-          onMouseEnter={() => setLogoHovered(true)}
+          onClick={isAlphaLab ? undefined : onOpenCopilot}
+          data-agent-target="panel-alphySidePanel"
+          onMouseEnter={() => !isAlphaLab && setLogoHovered(true)}
           onMouseLeave={() => setLogoHovered(false)}
-          whileTap={{ scale: 0.92 }}
+          whileTap={isAlphaLab ? undefined : { scale: 0.92 }}
           style={{
             display: "flex",
             alignItems: "center",
@@ -107,13 +106,15 @@ export default function Navbar1({
             marginRight: 16,
             background: "transparent",
             border: "none",
-            cursor: "pointer",
+            cursor: isAlphaLab ? "default" : "pointer",
             flexShrink: 0,
+            opacity: isAlphaLab ? 0.35 : 1,
+            transition: "opacity 150ms ease",
           }}
-          title="Open Alphy"
+          title={isAlphaLab ? "Alphy is in the playground" : "Open Alphy"}
         >
           <motion.div
-            animate={logoHovered ? { scale: 1.12, rotate: 3 } : { scale: 1, rotate: 0 }}
+            animate={logoHovered && !isAlphaLab ? { scale: 1.12, rotate: 3 } : { scale: 1, rotate: 0 }}
             transition={{ type: "spring", stiffness: 400, damping: 20 }}
           >
             <AlphyMascot size={36} />
@@ -150,6 +151,17 @@ export default function Navbar1({
                 }}
               >
                 {tab.label}
+                {tab.premium && (
+                  <span style={{
+                    fontSize: 8, fontWeight: 800, fontFamily: "var(--font-mono)",
+                    padding: "1px 5px", borderRadius: 4, marginLeft: 5,
+                    background: "linear-gradient(135deg, rgba(196,123,58,0.25), rgba(212,175,55,0.25))",
+                    color: "#d4af37", letterSpacing: "0.06em", lineHeight: 1.4,
+                    border: "1px solid rgba(212,175,55,0.2)",
+                  }}>
+                    PRO
+                  </span>
+                )}
                 {isActive && (
                   <motion.div
                     layoutId="nav-underline"
@@ -213,33 +225,22 @@ export default function Navbar1({
             }
           />
 
-          {/* Bell icon */}
-          <div style={{ position: "relative" }}>
-            <IconButton
-              onClick={() => setShowNotifications(!showNotifications)}
-              title="Notifications"
-              isActive={showNotifications}
-              icon={
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                </svg>
-              }
-            />
-            {notifications.length > 0 && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: 4,
-                  right: 4,
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  background: "var(--accent)",
-                }}
-              />
-            )}
-          </div>
+          {/* Alerts */}
+          <IconButton
+            onClick={() => setShowAlerts((v) => !v)}
+            title="Alerts"
+            isActive={showAlerts}
+            icon={
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+            }
+          />
+
+          {/* Notifications Bell (Convex-powered) */}
+          <NotificationBell />
 
           {/* Settings gear */}
           <IconButton
@@ -286,14 +287,12 @@ export default function Navbar1({
         </div>
       </nav>
 
-      {/* ═══ Notifications Dropdown ═══ */}
+      {/* ═══ Alerts Panel ═══ */}
       <AnimatePresence>
-        {showNotifications && (
-          <NotificationsDropdown
-            notifications={notifications}
-            onClose={() => setShowNotifications(false)}
-          />
-        )}
+        <AlertsPanel
+          isOpen={showAlerts}
+          onClose={() => setShowAlerts(false)}
+        />
       </AnimatePresence>
 
       {/* ═══ Profile Dropdown ═══ */}
@@ -350,66 +349,6 @@ function IconButton({
     >
       {icon}
     </motion.button>
-  );
-}
-
-// ─── Notifications Dropdown ───
-function NotificationsDropdown({
-  notifications,
-  onClose,
-}: {
-  notifications: { id: number; type: string; message: string; time: number }[];
-  onClose: () => void;
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: -8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8 }}
-      transition={{ duration: 0.15 }}
-      style={{
-        position: "fixed",
-        top: 52,
-        right: 50,
-        zIndex: 1000,
-        background: "rgba(33,30,26,0.98)",
-        border: "1px solid rgba(236,227,213,0.1)",
-        borderRadius: 12,
-        padding: 16,
-        width: 300,
-        backdropFilter: "blur(20px)",
-        boxShadow: "0 16px 48px rgba(15,12,8,0.6)",
-      }}
-    >
-      <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Notifications</span>
-        <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-      </div>
-      {notifications.length === 0 ? (
-        <div style={{ fontSize: 12, color: "var(--text-muted)", textAlign: "center", padding: 20 }}>No notifications</div>
-      ) : (
-        notifications.map((n) => (
-          <div
-            key={n.id}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 8,
-              background: "rgba(236,227,213,0.04)",
-              marginBottom: 4,
-            }}
-          >
-            <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>{n.message}</div>
-            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4, fontFamily: "var(--font-mono)" }}>
-              {formatTime(n.time)}
-            </div>
-          </div>
-        ))
-      )}
-    </motion.div>
   );
 }
 

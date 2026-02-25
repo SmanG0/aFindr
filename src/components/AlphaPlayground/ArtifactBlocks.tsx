@@ -149,28 +149,38 @@ function BlockCollapse({ label, count, children }: { label: string; count?: numb
   );
 }
 
-function MiniSparkline({ data, positive }: { data: number[]; positive?: boolean }) {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function MiniSparkline({ data, positive, height = 48 }: { data: number[]; positive?: boolean; height?: number }) {
   if (!data || data.length < 2) return null;
-  const w = 80, h = 28;
+  const vw = 100, vh = height;
   const min = Math.min(...data);
   const max = Math.max(...data);
   const range = max - min || 1;
-  const points = data.map((v, i) => `${(i / (data.length - 1)) * w},${h - 2 - ((v - min) / range) * (h - 4)}`).join(" ");
+  const points = data.map((v, i) => `${(i / (data.length - 1)) * vw},${vh - 3 - ((v - min) / range) * (vh - 6)}`).join(" ");
   const color = positive ? "var(--buy)" : "var(--sell)";
+  const gradId = `sp-${positive ? "g" : "r"}-${data.length}`;
   return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ display: "block" }}>
-      <defs>
-        <linearGradient id={`sp-${positive ? "g" : "r"}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.25" />
-          <stop offset="100%" stopColor={color} stopOpacity="0.02" />
-        </linearGradient>
-      </defs>
-      <polygon
-        points={`0,${h} ${points} ${w},${h}`}
-        fill={`url(#sp-${positive ? "g" : "r"})`}
-      />
-      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
+    <div style={{ width: "100%", height: vh }}>
+      <svg
+        width="100%"
+        height={vh}
+        viewBox={`0 0 ${vw} ${vh}`}
+        preserveAspectRatio="none"
+        style={{ display: "block" }}
+      >
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.25" />
+            <stop offset="100%" stopColor={color} stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        <polygon
+          points={`0,${vh} ${points} ${vw},${vh}`}
+          fill={`url(#${gradId})`}
+        />
+        <polyline points={points} fill="none" stroke={color} strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </div>
   );
 }
 
@@ -372,39 +382,72 @@ function EconomicDataBlock({ data }: { data: EconomicDataPayload }) {
   const change = latest?.value != null && prev != null ? latest.value - prev : null;
   const changePct = change != null && prev != null && prev !== 0 ? (change / Math.abs(prev)) : null;
   const isPositive = change != null ? change >= 0 : true;
+  const accentColor = isPositive ? "var(--buy)" : "var(--sell)";
+
+  // Build sparkline points in a 0-100 viewBox (responsive)
+  const sparkVW = 100, sparkVH = 48;
+  const sparkPoints = values.length >= 2
+    ? values.map((v, i) => {
+        const min = Math.min(...values);
+        const range = Math.max(...values) - min || 1;
+        return `${(i / (values.length - 1)) * sparkVW},${sparkVH - 3 - ((v - min) / range) * (sparkVH - 6)}`;
+      }).join(" ")
+    : "";
 
   return (
     <BlockCollapse label={data.info?.title || data.seriesId || "Economic Data"}>
-      <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
-        {/* Main metric */}
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 16 }}>
-          <div>
-            <div style={METRIC_LABEL}>{data.info?.units || "Value"}</div>
-            <div style={{ ...METRIC_VALUE, fontSize: 22 }}>
-              {latest?.value != null ? fmt(latest.value, latest.value < 10 ? 2 : 1) : "-"}
+      <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* Hero row: metric left, sparkline fills remaining space */}
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexShrink: 0 }}>
+            <div>
+              <div style={METRIC_LABEL}>{data.info?.units || "Value"}</div>
+              <div style={{ ...METRIC_VALUE, fontSize: 28, lineHeight: 1 }}>
+                {latest?.value != null ? fmt(latest.value, latest.value < 10 ? 2 : 1) : "-"}
+              </div>
             </div>
+            {change != null && (
+              <div style={{ paddingBottom: 2 }}>
+                <span style={{
+                  ...BADGE,
+                  background: isPositive ? "rgba(34,171,148,0.12)" : "rgba(229,77,77,0.12)",
+                  color: accentColor,
+                }}>
+                  {isPositive ? "+" : ""}{fmt(change, 2)}
+                  {changePct != null && ` (${isPositive ? "+" : ""}${(changePct * 100).toFixed(1)}%)`}
+                </span>
+              </div>
+            )}
           </div>
-          {change != null && (
-            <div style={{ paddingBottom: 2 }}>
-              <span style={{
-                ...BADGE,
-                background: isPositive ? "rgba(34,171,148,0.12)" : "rgba(229,77,77,0.12)",
-                color: isPositive ? "var(--buy)" : "var(--sell)",
-              }}>
-                {isPositive ? "+" : ""}{fmt(change, 2)}
-                {changePct != null && ` (${isPositive ? "+" : ""}${(changePct * 100).toFixed(1)}%)`}
-              </span>
+
+          {/* Sparkline — fills remaining width */}
+          {values.length >= 3 && (
+            <div style={{ flex: 1, minWidth: 0, height: sparkVH }}>
+              <svg
+                width="100%"
+                height={sparkVH}
+                viewBox={`0 0 ${sparkVW} ${sparkVH}`}
+                preserveAspectRatio="none"
+                style={{ display: "block" }}
+              >
+                <defs>
+                  <linearGradient id={`econ-sp-${isPositive ? "g" : "r"}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={accentColor} stopOpacity="0.2" />
+                    <stop offset="100%" stopColor={accentColor} stopOpacity="0" />
+                  </linearGradient>
+                </defs>
+                <polygon
+                  points={`0,${sparkVH} ${sparkPoints} ${sparkVW},${sparkVH}`}
+                  fill={`url(#econ-sp-${isPositive ? "g" : "r"})`}
+                />
+                <polyline points={sparkPoints} fill="none" stroke={accentColor} strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+              </svg>
             </div>
           )}
         </div>
 
-        {/* Sparkline */}
-        {values.length >= 3 && (
-          <MiniSparkline data={values} positive={isPositive} />
-        )}
-
-        {/* Info bar */}
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        {/* Info chips row */}
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
           {data.info?.frequency && (
             <div>
               <div style={METRIC_LABEL}>Frequency</div>
@@ -425,10 +468,15 @@ function EconomicDataBlock({ data }: { data: EconomicDataPayload }) {
           )}
         </div>
 
-        {/* Data table (last N observations) */}
+        {/* Compact data table */}
         {obs.length > 2 && (
-          <div style={{ maxHeight: 200, overflowY: "auto", scrollbarWidth: "thin", marginTop: 4 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <div style={{ maxHeight: 200, overflowY: "auto", scrollbarWidth: "thin", marginTop: 2 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+              <colgroup>
+                <col style={{ width: "40%" }} />
+                <col style={{ width: "30%" }} />
+                <col style={{ width: "30%" }} />
+              </colgroup>
               <thead>
                 <tr>
                   <th style={{ ...TABLE_HEADER, textAlign: "left" }}>Date</th>
@@ -962,80 +1010,160 @@ interface StockInfoData {
   price?: number;
   change?: number;
   changePct?: number;
-  marketCap?: number;
-  pe?: number;
-  eps?: number;
-  dividend?: number;
-  dividendYield?: number;
-  high52?: number;
-  low52?: number;
-  volume?: number;
-  avgVolume?: number;
+  prevClose?: number;
+  openPrice?: number;
+  marketCap?: string;
+  pe?: string | null;
+  eps?: string | null;
+  volume?: string;
+  avgVolume?: string;
+  divYield?: string | null;
+  beta?: string | null;
+  weekHigh52?: number;
+  weekLow52?: number;
+  dayHigh?: number;
+  dayLow?: number;
   sector?: string;
   industry?: string;
+  exchange?: string;
   description?: string;
-  analystRating?: string;
-  targetPrice?: number;
+  intraday?: number[];
+}
+
+/** Intraday mini line chart with open-price dashed baseline */
+function IntradayChart({ prices, openPrice, isPositive }: { prices: number[]; openPrice: number; isPositive: boolean }) {
+  const W = 240, H = 56, padY = 4;
+  const allVals = [...prices, openPrice];
+  const mn = Math.min(...allVals);
+  const mx = Math.max(...allVals);
+  const range = mx - mn || 1;
+  const yOf = (v: number) => padY + (1 - (v - mn) / range) * (H - padY * 2);
+  const color = isPositive ? "var(--buy)" : "var(--sell)";
+
+  const points = prices.map((v, i) =>
+    `${(i / (prices.length - 1)) * W},${yOf(v)}`
+  ).join(" ");
+
+  const openY = yOf(openPrice);
+  const gradId = `intra-${isPositive ? "g" : "r"}`;
+
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.15" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      {/* Open price baseline */}
+      <line x1="0" y1={openY} x2={W} y2={openY}
+        stroke="var(--text-disabled)" strokeWidth="0.8" strokeDasharray="3 3" />
+      {/* Gradient fill */}
+      <polygon points={`0,${H} ${points} ${W},${H}`} fill={`url(#${gradId})`} />
+      {/* Price line */}
+      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      {/* Current price dot */}
+      <circle cx={W} cy={yOf(prices[prices.length - 1])} r="2.5" fill={color} />
+    </svg>
+  );
 }
 
 function StockInfoBlock({ data }: { data: StockInfoData }) {
   const isPos = (data.changePct ?? 0) >= 0;
+  const accentColor = isPos ? "var(--buy)" : "var(--sell)";
+  const hasIntraday = data.intraday && data.intraday.length >= 3;
+  const openPrice = data.openPrice ?? data.prevClose ?? data.price ?? 0;
+
+  // Helper: render metric only if value is truthy and not "-"
+  const hasVal = (v: string | number | null | undefined) => v != null && v !== "-" && v !== "";
+
+  // Build metrics row — only include items with real data
+  const metrics: { label: string; value: string; color?: string }[] = [];
+  if (hasVal(data.marketCap)) metrics.push({ label: "Mkt Cap", value: data.marketCap! as string });
+  if (hasVal(data.volume)) metrics.push({ label: "Vol", value: data.volume! as string });
+  if (hasVal(data.pe)) metrics.push({ label: "P/E", value: data.pe! as string });
+  if (hasVal(data.eps)) metrics.push({ label: "EPS", value: `$${data.eps}` });
+  if (hasVal(data.divYield)) metrics.push({ label: "Div", value: data.divYield! as string });
+  if (hasVal(data.beta)) metrics.push({ label: "Beta", value: data.beta! as string });
 
   return (
     <BlockCollapse label={`${data.ticker || "?"} — ${data.name || "Stock"}`}>
-      <div style={{ padding: 14 }}>
-        {/* Price header */}
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginBottom: 12 }}>
-          <div style={{ ...METRIC_VALUE, fontSize: 24 }}>${fmt(data.price)}</div>
-          <div style={{
-            ...BADGE, marginBottom: 3,
-            background: isPos ? "rgba(34,171,148,0.12)" : "rgba(229,77,77,0.12)",
-            color: isPos ? "var(--buy)" : "var(--sell)",
-          }}>
-            {data.change != null ? `${isPos ? "+" : ""}${fmt(data.change)}` : ""}
-            {data.changePct != null ? ` (${isPos ? "+" : ""}${(data.changePct).toFixed(2)}%)` : ""}
+      <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* Hero: price + change left, intraday chart right */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 10 }}>
+              <div style={{ ...METRIC_VALUE, fontSize: 28, lineHeight: 1 }}>${fmt(data.price)}</div>
+              <div style={{
+                ...BADGE, marginBottom: 2,
+                background: isPos ? "rgba(34,171,148,0.12)" : "rgba(229,77,77,0.12)",
+                color: accentColor,
+              }}>
+                {data.change != null ? `${isPos ? "+" : ""}${fmt(data.change)}` : ""}
+                {data.changePct != null ? ` (${isPos ? "+" : ""}${data.changePct.toFixed(2)}%)` : ""}
+              </div>
+            </div>
+            {(data.sector && data.sector !== "N/A") && (
+              <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4, fontFamily: "var(--font-mono)" }}>
+                {data.exchange && data.exchange !== "N/A" ? `${data.exchange} · ` : ""}{data.sector}{data.industry ? ` · ${data.industry}` : ""}
+              </div>
+            )}
           </div>
-        </div>
-
-        {/* Metrics grid */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 20px" }}>
-          {data.marketCap != null && (
-            <div><div style={METRIC_LABEL}>Mkt Cap</div><div style={{ ...METRIC_VALUE, fontSize: 12 }}>${fmtCompact(data.marketCap)}</div></div>
-          )}
-          {data.pe != null && (
-            <div><div style={METRIC_LABEL}>P/E</div><div style={{ ...METRIC_VALUE, fontSize: 12 }}>{fmt(data.pe, 1)}</div></div>
-          )}
-          {data.eps != null && (
-            <div><div style={METRIC_LABEL}>EPS</div><div style={{ ...METRIC_VALUE, fontSize: 12 }}>${fmt(data.eps)}</div></div>
-          )}
-          {data.dividendYield != null && data.dividendYield > 0 && (
-            <div><div style={METRIC_LABEL}>Div Yield</div><div style={{ ...METRIC_VALUE, fontSize: 12 }}>{(data.dividendYield * 100).toFixed(2)}%</div></div>
-          )}
-          {data.high52 != null && (
-            <div><div style={METRIC_LABEL}>52W High</div><div style={{ ...METRIC_VALUE, fontSize: 12 }}>${fmt(data.high52)}</div></div>
-          )}
-          {data.low52 != null && (
-            <div><div style={METRIC_LABEL}>52W Low</div><div style={{ ...METRIC_VALUE, fontSize: 12 }}>${fmt(data.low52)}</div></div>
-          )}
-          {data.volume != null && (
-            <div><div style={METRIC_LABEL}>Volume</div><div style={{ ...METRIC_VALUE, fontSize: 12 }}>{fmtCompact(data.volume)}</div></div>
-          )}
-          {data.sector && (
-            <div><div style={METRIC_LABEL}>Sector</div><div style={{ fontSize: 12, color: "var(--text-secondary)" }}>{data.sector}</div></div>
+          {hasIntraday && (
+            <IntradayChart prices={data.intraday!} openPrice={openPrice} isPositive={isPos} />
           )}
         </div>
 
-        {data.description && (
+        {/* Metrics strip */}
+        {metrics.length > 0 && (
           <div style={{
-            fontSize: 11, color: "var(--text-muted)", lineHeight: 1.6, marginTop: 12,
-            overflow: "hidden", textOverflow: "ellipsis",
-            display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" as const,
+            display: "grid",
+            gridTemplateColumns: `repeat(${Math.min(metrics.length, 6)}, 1fr)`,
+            gap: 0,
+            borderTop: "1px solid rgba(236,227,213,0.06)",
+            borderBottom: "1px solid rgba(236,227,213,0.06)",
           }}>
-            {data.description}
+            {metrics.map((m, i) => (
+              <div key={m.label} style={{
+                padding: "8px 10px",
+                borderRight: i < metrics.length - 1 ? "1px solid rgba(236,227,213,0.06)" : "none",
+              }}>
+                <div style={METRIC_LABEL}>{m.label}</div>
+                <div style={{ ...METRIC_VALUE, fontSize: 12, color: m.color || "var(--text-primary)" }}>{m.value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Day range + 52W range */}
+        {(data.dayLow != null && data.dayHigh != null && data.price != null) && (
+          <div style={{ display: "flex", gap: 20 }}>
+            <RangeBar label="Day" low={data.dayLow} high={data.dayHigh} current={data.price} />
+            {data.weekLow52 != null && data.weekHigh52 != null && (
+              <RangeBar label="52W" low={data.weekLow52} high={data.weekHigh52} current={data.price} />
+            )}
           </div>
         )}
       </div>
     </BlockCollapse>
+  );
+}
+
+/** Small horizontal range bar showing where current price sits */
+function RangeBar({ label, low, high, current }: { label: string; low: number; high: number; current: number }) {
+  const range = high - low || 1;
+  const pct = Math.max(0, Math.min(100, ((current - low) / range) * 100));
+  return (
+    <div style={{ flex: 1 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+        <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "var(--font-mono)", textTransform: "uppercase" }}>{label}</span>
+        <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>${fmt(low)} — ${fmt(high)}</span>
+      </div>
+      <div style={{ height: 4, borderRadius: 2, background: "rgba(236,227,213,0.08)", position: "relative" }}>
+        <div style={{ position: "absolute", left: 0, top: 0, height: "100%", width: `${pct}%`, borderRadius: 2, background: "var(--accent)", opacity: 0.5 }} />
+        <div style={{ position: "absolute", top: -2, left: `${pct}%`, transform: "translateX(-50%)", width: 8, height: 8, borderRadius: "50%", background: "var(--accent)", border: "2px solid var(--bg)" }} />
+      </div>
+    </div>
   );
 }
 
@@ -1045,37 +1173,99 @@ interface MarketDataPayload {
   symbol?: string;
   period?: string;
   interval?: string;
+  // Frontend-expected fields
   count?: number;
   latest?: { date?: string; open?: number; high?: number; low?: number; close?: number; volume?: number };
-  candles?: Array<{ close?: number }>;
+  candles?: Array<{ close?: number; open?: number; high?: number; low?: number; volume?: number }>;
+  // Backend-actual fields
+  total_candles?: number;
+  latest_close?: number;
+  recent_candles?: Array<{ time?: string; open?: number; high?: number; low?: number; close?: number; volume?: number }>;
 }
 
 function MarketDataBlock({ data }: { data: MarketDataPayload }) {
-  const latest = data.latest;
-  const closes = (data.candles || []).map((c) => c.close).filter((v): v is number => v != null);
+  // Normalize: backend sends recent_candles / latest_close / total_candles
+  const candles = data.candles || data.recent_candles || [];
+  const lastCandle = candles.length > 0 ? candles[candles.length - 1] : undefined;
+  const latest = data.latest || (lastCandle ? {
+    close: lastCandle.close,
+    open: lastCandle.open,
+    high: lastCandle.high,
+    low: lastCandle.low,
+    volume: lastCandle.volume,
+  } : undefined);
+  const closes = candles.map((c) => c.close).filter((v): v is number => v != null);
   const isPos = closes.length >= 2 ? closes[closes.length - 1] >= closes[0] : true;
+  const accentColor = isPos ? "var(--buy)" : "var(--sell)";
+
+  // Responsive sparkline
+  const sparkVW = 100, sparkVH = 48;
+  const sparkPoints = closes.length >= 2
+    ? closes.map((v, i) => {
+        const min = Math.min(...closes);
+        const range = Math.max(...closes) - min || 1;
+        return `${(i / (closes.length - 1)) * sparkVW},${sparkVH - 3 - ((v - min) / range) * (sparkVH - 6)}`;
+      }).join(" ")
+    : "";
 
   return (
     <BlockCollapse label={`Market Data — ${data.symbol || "?"}`}>
-      <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* Hero row: price left, sparkline fills right */}
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap", flexShrink: 0 }}>
+            {latest?.close != null && (
+              <div><div style={METRIC_LABEL}>Close</div><div style={{ ...METRIC_VALUE, fontSize: 28, lineHeight: 1 }}>${fmt(latest.close)}</div></div>
+            )}
+            {latest?.high != null && (
+              <div><div style={METRIC_LABEL}>High</div><div style={{ ...METRIC_VALUE, fontSize: 13 }}>${fmt(latest.high)}</div></div>
+            )}
+            {latest?.low != null && (
+              <div><div style={METRIC_LABEL}>Low</div><div style={{ ...METRIC_VALUE, fontSize: 13 }}>${fmt(latest.low)}</div></div>
+            )}
+          </div>
+
+          {/* Sparkline — fills remaining width */}
+          {closes.length >= 3 && (
+            <div style={{ flex: 1, minWidth: 0, height: sparkVH }}>
+              <svg
+                width="100%"
+                height={sparkVH}
+                viewBox={`0 0 ${sparkVW} ${sparkVH}`}
+                preserveAspectRatio="none"
+                style={{ display: "block" }}
+              >
+                <defs>
+                  <linearGradient id={`mkt-sp-${isPos ? "g" : "r"}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={accentColor} stopOpacity="0.2" />
+                    <stop offset="100%" stopColor={accentColor} stopOpacity="0" />
+                  </linearGradient>
+                </defs>
+                <polygon
+                  points={`0,${sparkVH} ${sparkPoints} ${sparkVW},${sparkVH}`}
+                  fill={`url(#mkt-sp-${isPos ? "g" : "r"})`}
+                />
+                <polyline points={sparkPoints} fill="none" stroke={accentColor} strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+              </svg>
+            </div>
+          )}
+        </div>
+
+        {/* Secondary metrics */}
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-          {latest?.close != null && (
-            <div><div style={METRIC_LABEL}>Close</div><div style={METRIC_VALUE}>${fmt(latest.close)}</div></div>
-          )}
-          {latest?.high != null && (
-            <div><div style={METRIC_LABEL}>High</div><div style={{ ...METRIC_VALUE, fontSize: 13 }}>${fmt(latest.high)}</div></div>
-          )}
-          {latest?.low != null && (
-            <div><div style={METRIC_LABEL}>Low</div><div style={{ ...METRIC_VALUE, fontSize: 13 }}>${fmt(latest.low)}</div></div>
-          )}
           {latest?.volume != null && (
             <div><div style={METRIC_LABEL}>Volume</div><div style={{ ...METRIC_VALUE, fontSize: 13 }}>{fmtCompact(latest.volume)}</div></div>
           )}
-          {data.count != null && (
-            <div><div style={METRIC_LABEL}>Bars</div><div style={{ ...METRIC_VALUE, fontSize: 13 }}>{data.count}</div></div>
+          {(data.count ?? data.total_candles) != null && (
+            <div><div style={METRIC_LABEL}>Bars</div><div style={{ ...METRIC_VALUE, fontSize: 13 }}>{data.count ?? data.total_candles}</div></div>
+          )}
+          {data.period && (
+            <div><div style={METRIC_LABEL}>Period</div><div style={{ ...METRIC_VALUE, fontSize: 13 }}>{data.period}</div></div>
+          )}
+          {data.interval && (
+            <div><div style={METRIC_LABEL}>Interval</div><div style={{ ...METRIC_VALUE, fontSize: 13 }}>{data.interval}</div></div>
           )}
         </div>
-        {closes.length >= 3 && <MiniSparkline data={closes} positive={isPos} />}
       </div>
     </BlockCollapse>
   );
@@ -1236,37 +1426,72 @@ function LaborDataBlock({ data }: { data: LaborDataPayload }) {
   const change = latest?.value != null && prev != null ? latest.value - prev : null;
   const changePct = change != null && prev != null && prev !== 0 ? (change / Math.abs(prev)) : null;
   const isPositive = change != null ? change >= 0 : true;
+  const accentColor = isPositive ? "var(--buy)" : "var(--sell)";
+
+  // Responsive sparkline points
+  const sparkVW = 100, sparkVH = 48;
+  const sparkPoints = values.length >= 2
+    ? values.map((v, i) => {
+        const min = Math.min(...values);
+        const range = Math.max(...values) - min || 1;
+        return `${(i / (values.length - 1)) * sparkVW},${sparkVH - 3 - ((v - min) / range) * (sparkVH - 6)}`;
+      }).join(" ")
+    : "";
 
   return (
     <BlockCollapse label={data.info?.title || data.seriesId || "BLS Labor Data"}>
-      <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
-        {/* Main metric */}
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 16 }}>
-          <div>
-            <div style={METRIC_LABEL}>{data.info?.units || "Value"}</div>
-            <div style={{ ...METRIC_VALUE, fontSize: 22 }}>
-              {latest?.value != null ? fmt(latest.value, latest.value < 10 ? 2 : 1) : "-"}
+      <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* Hero row: metric left, sparkline fills remaining space */}
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexShrink: 0 }}>
+            <div>
+              <div style={METRIC_LABEL}>{data.info?.units || "Value"}</div>
+              <div style={{ ...METRIC_VALUE, fontSize: 28, lineHeight: 1 }}>
+                {latest?.value != null ? fmt(latest.value, latest.value < 10 ? 2 : 1) : "-"}
+              </div>
             </div>
+            {change != null && (
+              <div style={{ paddingBottom: 2 }}>
+                <span style={{
+                  ...BADGE,
+                  background: isPositive ? "rgba(34,171,148,0.12)" : "rgba(229,77,77,0.12)",
+                  color: accentColor,
+                }}>
+                  {isPositive ? "+" : ""}{fmt(change, 2)}
+                  {changePct != null && ` (${isPositive ? "+" : ""}${(changePct * 100).toFixed(1)}%)`}
+                </span>
+              </div>
+            )}
           </div>
-          {change != null && (
-            <div style={{ paddingBottom: 2 }}>
-              <span style={{
-                ...BADGE,
-                background: isPositive ? "rgba(34,171,148,0.12)" : "rgba(229,77,77,0.12)",
-                color: isPositive ? "var(--buy)" : "var(--sell)",
-              }}>
-                {isPositive ? "+" : ""}{fmt(change, 2)}
-                {changePct != null && ` (${isPositive ? "+" : ""}${(changePct * 100).toFixed(1)}%)`}
-              </span>
+
+          {/* Sparkline — fills remaining width */}
+          {values.length >= 3 && (
+            <div style={{ flex: 1, minWidth: 0, height: sparkVH }}>
+              <svg
+                width="100%"
+                height={sparkVH}
+                viewBox={`0 0 ${sparkVW} ${sparkVH}`}
+                preserveAspectRatio="none"
+                style={{ display: "block" }}
+              >
+                <defs>
+                  <linearGradient id={`bls-sp-${isPositive ? "g" : "r"}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={accentColor} stopOpacity="0.2" />
+                    <stop offset="100%" stopColor={accentColor} stopOpacity="0" />
+                  </linearGradient>
+                </defs>
+                <polygon
+                  points={`0,${sparkVH} ${sparkPoints} ${sparkVW},${sparkVH}`}
+                  fill={`url(#bls-sp-${isPositive ? "g" : "r"})`}
+                />
+                <polyline points={sparkPoints} fill="none" stroke={accentColor} strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+              </svg>
             </div>
           )}
         </div>
 
-        {/* Sparkline */}
-        {values.length >= 3 && <MiniSparkline data={values} positive={isPositive} />}
-
-        {/* Info bar */}
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        {/* Info chips row */}
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
           {data.info?.frequency && (
             <div>
               <div style={METRIC_LABEL}>Frequency</div>

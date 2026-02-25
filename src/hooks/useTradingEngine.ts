@@ -1,34 +1,32 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { useMutation } from "convex/react";
+import { api } from "../../convex/_generated/api";
+import { useCurrentUser } from "@/hooks/useConvexUser";
 import {
   AccountState,
   Position,
   ClosedTrade,
   getContractConfig,
 } from "@/lib/types";
-import { syncPosition, syncClosePosition, syncFullState } from "@/lib/api";
 
 const INITIAL_BALANCE = 25000;
-const STORAGE_KEY = "afindr_trading_state_v2";
-const DEMO_VERSION = 4; // bump to force fresh demo data
-const DEMO_VERSION_KEY = "afindr_demo_version";
+const STORAGE_KEY = "afindr_trading_state_v3";
 
 function loadSavedState(): AccountState | null {
   if (typeof window === "undefined") return null;
   try {
-    // If demo version changed, wipe stale state
-    const ver = localStorage.getItem(DEMO_VERSION_KEY);
-    if (ver !== String(DEMO_VERSION)) {
-      localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem("afindr_trading_state"); // old key cleanup
-      localStorage.setItem(DEMO_VERSION_KEY, String(DEMO_VERSION));
-      return null;
-    }
+    // Clean up old storage keys from previous versions
+    localStorage.removeItem("afindr_trading_state");
+    localStorage.removeItem("afindr_trading_state_v2");
+    localStorage.removeItem("afindr_demo_version");
+
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return null;
     const parsed = JSON.parse(saved) as AccountState;
     if (typeof parsed.balance !== "number" || !Array.isArray(parsed.positions)) return null;
+    if (typeof parsed.isActive !== "boolean") parsed.isActive = false;
     return parsed;
   } catch {
     return null;
@@ -53,70 +51,37 @@ function calcUnrealizedPnl(position: Position, currentPrice: number): number {
   return (position.entryPrice - currentPrice) * position.size * pointValue;
 }
 
+/** Map null → undefined for Convex optional fields */
+function nullToUndefined(v: number | null): number | undefined {
+  return v === null ? undefined : v;
+}
+
 const initialAccountState: AccountState = {
-  balance: INITIAL_BALANCE,
-  equity: INITIAL_BALANCE,
+  balance: 0,
+  equity: 0,
   unrealizedPnl: 0,
   positions: [],
   orders: [],
   tradeHistory: [],
+  isActive: false,
 };
 
-function buildDemoState(): AccountState {
-  const now = Date.now();
-  const DAY = 86400000;
-
-  // Holdings purchased over the last ~60 days with staggered entry dates
-  const demoPositions: Position[] = [
-    { id: "demo-pos-1", symbol: "AAPL",  side: "long", size: 25, entryPrice: 225.80, entryTime: now - 52 * DAY, stopLoss: 215.00, takeProfit: 250.00, commission: 0.62, unrealizedPnl: 355.00 },
-    { id: "demo-pos-2", symbol: "NVDA",  side: "long", size: 15, entryPrice: 125.60, entryTime: now - 44 * DAY, stopLoss: 115.00, takeProfit: 160.00, commission: 0.62, unrealizedPnl: 682.50 },
-    { id: "demo-pos-3", symbol: "MSFT",  side: "long", size: 12, entryPrice: 430.20, entryTime: now - 35 * DAY, stopLoss: 410.00, takeProfit: 460.00, commission: 0.62, unrealizedPnl: -170.40 },
-    { id: "demo-pos-4", symbol: "META",  side: "long", size: 8,  entryPrice: 585.40, entryTime: now - 28 * DAY, stopLoss: 560.00, takeProfit: 650.00, commission: 0.62, unrealizedPnl: 436.80 },
-    { id: "demo-pos-5", symbol: "AMZN",  side: "long", size: 20, entryPrice: 218.30, entryTime: now - 21 * DAY, stopLoss: 205.00, takeProfit: 245.00, commission: 0.62, unrealizedPnl: 294.00 },
-    { id: "demo-pos-6", symbol: "GOOGL", side: "long", size: 18, entryPrice: 188.50, entryTime: now - 15 * DAY, stopLoss: 178.00, takeProfit: 210.00, commission: 0.62, unrealizedPnl: 198.00 },
-    { id: "demo-pos-7", symbol: "V",     side: "long", size: 10, entryPrice: 328.90, entryTime: now - 10 * DAY, stopLoss: 315.00, takeProfit: 350.00, commission: 0.62, unrealizedPnl: -89.00 },
-    { id: "demo-pos-8", symbol: "TSLA",  side: "long", size: 8,  entryPrice: 365.40, entryTime: now - 5 * DAY,  stopLoss: 340.00, takeProfit: 400.00, commission: 0.62, unrealizedPnl: 148.80 },
-  ];
-
-  // Closed trades from further back (~60-90 days ago)
-  const demoHistory: ClosedTrade[] = [
-    { id: "demo-t1",  symbol: "AAPL",  side: "long", size: 20, entryPrice: 218.30, exitPrice: 226.45, entryTime: now - 88 * DAY, exitTime: now - 80 * DAY, stopLoss: null, takeProfit: null, pnl: 161.76, pnlPoints: 8.15, commission: 1.24 },
-    { id: "demo-t2",  symbol: "GOOGL", side: "long", size: 15, entryPrice: 178.90, exitPrice: 185.40, entryTime: now - 82 * DAY, exitTime: now - 76 * DAY, stopLoss: null, takeProfit: null, pnl: 96.26,  pnlPoints: 6.50, commission: 1.24 },
-    { id: "demo-t3",  symbol: "AMZN",  side: "long", size: 10, entryPrice: 208.40, exitPrice: 203.10, entryTime: now - 78 * DAY, exitTime: now - 73 * DAY, stopLoss: null, takeProfit: null, pnl: -54.24, pnlPoints: -5.30, commission: 1.24 },
-    { id: "demo-t4",  symbol: "NVDA",  side: "long", size: 12, entryPrice: 118.50, exitPrice: 127.80, entryTime: now - 74 * DAY, exitTime: now - 69 * DAY, stopLoss: null, takeProfit: null, pnl: 110.36, pnlPoints: 9.30, commission: 1.24 },
-    { id: "demo-t5",  symbol: "META",  side: "long", size: 8,  entryPrice: 572.60, exitPrice: 589.30, entryTime: now - 70 * DAY, exitTime: now - 65 * DAY, stopLoss: null, takeProfit: null, pnl: 132.36, pnlPoints: 16.70, commission: 1.24 },
-    { id: "demo-t6",  symbol: "TSLA",  side: "long", size: 10, entryPrice: 342.80, exitPrice: 358.40, entryTime: now - 66 * DAY, exitTime: now - 62 * DAY, stopLoss: null, takeProfit: null, pnl: 154.76, pnlPoints: 15.60, commission: 1.24 },
-    { id: "demo-t7",  symbol: "V",     side: "long", size: 12, entryPrice: 318.50, exitPrice: 312.80, entryTime: now - 63 * DAY, exitTime: now - 60 * DAY, stopLoss: null, takeProfit: null, pnl: -69.64, pnlPoints: -5.70, commission: 1.24 },
-    { id: "demo-t8",  symbol: "JPM",   side: "long", size: 15, entryPrice: 248.20, exitPrice: 256.90, entryTime: now - 60 * DAY, exitTime: now - 56 * DAY, stopLoss: null, takeProfit: null, pnl: 129.26, pnlPoints: 8.70, commission: 1.24 },
-    { id: "demo-t9",  symbol: "CRM",   side: "long", size: 10, entryPrice: 338.40, exitPrice: 329.60, entryTime: now - 58 * DAY, exitTime: now - 55 * DAY, stopLoss: null, takeProfit: null, pnl: -89.24, pnlPoints: -8.80, commission: 1.24 },
-    { id: "demo-t10", symbol: "MSFT",  side: "long", size: 8,  entryPrice: 418.50, exitPrice: 432.80, entryTime: now - 56 * DAY, exitTime: now - 53 * DAY, stopLoss: null, takeProfit: null, pnl: 113.16, pnlPoints: 14.30, commission: 1.24 },
-  ];
-
-  const totalClosedPnl = demoHistory.reduce((sum, t) => sum + t.pnl, 0);
-  const totalUnrealized = demoPositions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
-  const balance = INITIAL_BALANCE + totalClosedPnl;
-
-  return {
-    balance,
-    equity: balance + totalUnrealized,
-    unrealizedPnl: totalUnrealized,
-    positions: demoPositions,
-    orders: [],
-    tradeHistory: demoHistory,
-  };
-}
-
 export function useTradingEngine() {
+  const { isAuthenticated } = useCurrentUser();
   const [accountState, setAccountState] = useState<AccountState>(initialAccountState);
   const [stateHydrated, setStateHydrated] = useState(false);
+
+  // Convex mutations
+  const openPositionMut = useMutation(api.trading.openPosition);
+  const closePositionMut = useMutation(api.trading.closePosition);
+  const syncFullStateMut = useMutation(api.trading.syncFullState);
 
   useEffect(() => {
     const saved = loadSavedState();
     if (saved) {
       setAccountState(saved);
-    } else {
-      setAccountState(buildDemoState());
     }
+    // No saved state → keep initialAccountState (inactive, zero balance)
     setStateHydrated(true);
   }, []);
 
@@ -127,7 +92,46 @@ export function useTradingEngine() {
     } catch {
       /* localStorage might be full */
     }
-  }, [accountState]);
+  }, [accountState, stateHydrated]);
+
+  // Initial sync to Convex — push full state (positions + trades) once after hydration
+  const convexSyncedRef = useRef(false);
+  useEffect(() => {
+    if (!stateHydrated || !isAuthenticated || convexSyncedRef.current) return;
+    convexSyncedRef.current = true;
+
+    const state = accountState;
+    syncFullStateMut({
+      positions: state.positions.map((p) => ({
+        positionId: p.id,
+        symbol: p.symbol,
+        side: p.side,
+        size: p.size,
+        entryPrice: p.entryPrice,
+        entryTime: p.entryTime,
+        stopLoss: nullToUndefined(p.stopLoss),
+        takeProfit: nullToUndefined(p.takeProfit),
+        commission: p.commission,
+        unrealizedPnl: p.unrealizedPnl,
+      })),
+      trades: state.tradeHistory.map((t) => ({
+        tradeId: t.id,
+        symbol: t.symbol,
+        side: t.side,
+        size: t.size,
+        entryPrice: t.entryPrice,
+        exitPrice: t.exitPrice,
+        entryTime: t.entryTime,
+        exitTime: t.exitTime,
+        stopLoss: nullToUndefined(t.stopLoss),
+        takeProfit: nullToUndefined(t.takeProfit),
+        pnl: t.pnl,
+        pnlPoints: t.pnlPoints,
+        commission: t.commission,
+      })),
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stateHydrated, isAuthenticated]);
 
   const placeTrade = useCallback(
     (
@@ -160,10 +164,23 @@ export function useTradingEngine() {
         positions: [...prev.positions, position],
       }));
 
-      // Fire-and-forget sync to backend DB
-      syncPosition(position);
+      // Fire-and-forget sync to Convex
+      if (isAuthenticated) {
+        openPositionMut({
+          positionId: position.id,
+          symbol: position.symbol,
+          side: position.side,
+          size: position.size,
+          entryPrice: position.entryPrice,
+          entryTime: position.entryTime,
+          stopLoss: nullToUndefined(position.stopLoss),
+          takeProfit: nullToUndefined(position.takeProfit),
+          commission: position.commission,
+          unrealizedPnl: position.unrealizedPnl,
+        });
+      }
     },
-    [],
+    [isAuthenticated, openPositionMut],
   );
 
   const closePosition = useCallback(
@@ -198,12 +215,17 @@ export function useTradingEngine() {
           commission: position.commission + exitCommission,
         };
 
-        // Fire-and-forget sync to backend DB
-        syncClosePosition(
-          id, currentPrice, exitTime,
-          pnl - exitCommission, pnlPoints,
-          position.commission + exitCommission,
-        );
+        // Fire-and-forget sync to Convex
+        if (isAuthenticated) {
+          closePositionMut({
+            positionId: id,
+            exitPrice: currentPrice,
+            exitTime,
+            pnl: pnl - exitCommission,
+            pnlPoints,
+            commission: position.commission + exitCommission,
+          });
+        }
 
         const remainingPositions = prev.positions.filter((p) => p.id !== id);
         const newBalance = prev.balance + pnl - exitCommission;
@@ -222,7 +244,7 @@ export function useTradingEngine() {
         };
       });
     },
-    [],
+    [isAuthenticated, closePositionMut],
   );
 
   const closeAllPositions = useCallback(
@@ -407,6 +429,118 @@ export function useTradingEngine() {
     [],
   );
 
+  const editPosition = useCallback(
+    (symbol: string, updates: { size?: number; stopLoss?: number; takeProfit?: number }) => {
+      setAccountState((prev) => {
+        const idx = prev.positions.findIndex((p) => p.symbol.toUpperCase() === symbol.toUpperCase());
+        if (idx === -1) return prev;
+
+        const pos = prev.positions[idx];
+        const updatedPos: Position = {
+          ...pos,
+          ...(updates.size !== undefined && { size: updates.size }),
+          ...(updates.stopLoss !== undefined && { stopLoss: updates.stopLoss }),
+          ...(updates.takeProfit !== undefined && { takeProfit: updates.takeProfit }),
+        };
+
+        const newPositions = [...prev.positions];
+        newPositions[idx] = updatedPos;
+        return { ...prev, positions: newPositions };
+      });
+    },
+    [],
+  );
+
+  const modifyPositionById = useCallback(
+    (positionId: string, updates: { stopLoss?: number; takeProfit?: number }) => {
+      setAccountState((prev) => {
+        const idx = prev.positions.findIndex((p) => p.id === positionId);
+        if (idx === -1) return prev;
+
+        const pos = prev.positions[idx];
+        const updatedPos: Position = {
+          ...pos,
+          ...(updates.stopLoss !== undefined && { stopLoss: updates.stopLoss }),
+          ...(updates.takeProfit !== undefined && { takeProfit: updates.takeProfit }),
+        };
+
+        const newPositions = [...prev.positions];
+        newPositions[idx] = updatedPos;
+        return { ...prev, positions: newPositions };
+      });
+    },
+    [],
+  );
+
+  const removeBySymbol = useCallback(
+    (symbol: string, currentPrice: number) => {
+      setAccountState((prev) => {
+        const toRemove = prev.positions.filter((p) => p.symbol.toUpperCase() === symbol.toUpperCase());
+        if (toRemove.length === 0) return prev;
+
+        let newBalance = prev.balance;
+        const closedTrades: ClosedTrade[] = [];
+
+        for (const position of toRemove) {
+          const contract = getContractConfig(position.symbol);
+          const pointValue = contract.pointValue;
+          const pnlPoints =
+            position.side === "long"
+              ? currentPrice - position.entryPrice
+              : position.entryPrice - currentPrice;
+          const pnl = pnlPoints * position.size * pointValue;
+          const exitCommission = getCommissionPerSide(position.symbol) * position.size;
+          newBalance += pnl - exitCommission;
+
+          closedTrades.push({
+            id: position.id,
+            symbol: position.symbol,
+            side: position.side,
+            size: position.size,
+            entryPrice: position.entryPrice,
+            exitPrice: currentPrice,
+            entryTime: position.entryTime,
+            exitTime: Date.now(),
+            stopLoss: position.stopLoss,
+            takeProfit: position.takeProfit,
+            pnl: pnl - exitCommission,
+            pnlPoints,
+            commission: position.commission + exitCommission,
+          });
+
+          if (isAuthenticated) {
+            closePositionMut({
+              positionId: position.id,
+              exitPrice: currentPrice,
+              exitTime: Date.now(),
+              pnl: pnl - exitCommission,
+              pnlPoints,
+              commission: position.commission + exitCommission,
+            });
+          }
+        }
+
+        const remainingPositions = prev.positions.filter(
+          (p) => p.symbol.toUpperCase() !== symbol.toUpperCase(),
+        );
+        const totalUnrealized = remainingPositions.reduce(
+          (sum, p) => sum + p.unrealizedPnl,
+          0,
+        );
+
+        return {
+          ...prev,
+          balance: newBalance,
+          equity: newBalance + totalUnrealized,
+          unrealizedPnl: totalUnrealized,
+          positions: remainingPositions,
+          tradeHistory: [...prev.tradeHistory, ...closedTrades],
+        };
+      });
+    },
+    [isAuthenticated, closePositionMut],
+  );
+
   const updatePrices = useCallback((currentPrice: number, symbol?: string) => {
     setAccountState((prev) => {
       const updatedPositions = prev.positions.map((p) => {
@@ -431,17 +565,21 @@ export function useTradingEngine() {
   }, []);
 
   const resetAccount = useCallback(() => {
-    setAccountState(initialAccountState);
-    try { localStorage.removeItem(STORAGE_KEY); } catch { /* noop */ }
-    // Sync reset state to backend
-    syncFullState({
-      balance: initialAccountState.balance,
-      equity: initialAccountState.equity,
+    const resetState: AccountState = {
+      balance: INITIAL_BALANCE,
+      equity: INITIAL_BALANCE,
       unrealizedPnl: 0,
       positions: [],
+      orders: [],
       tradeHistory: [],
-    });
-  }, []);
+      isActive: true,
+    };
+    setAccountState(resetState);
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* noop */ }
+    if (isAuthenticated) {
+      syncFullStateMut({ positions: [], trades: [] });
+    }
+  }, [isAuthenticated, syncFullStateMut]);
 
   const setBalance = useCallback((newBalance: number) => {
     setAccountState(() => {
@@ -452,17 +590,30 @@ export function useTradingEngine() {
         positions: [],
         orders: [],
         tradeHistory: [],
+        isActive: true,
       };
-      syncFullState({
-        balance: newBalance,
-        equity: newBalance,
-        unrealizedPnl: 0,
-        positions: [],
-        tradeHistory: [],
-      });
+      if (isAuthenticated) {
+        syncFullStateMut({ positions: [], trades: [] });
+      }
       return state;
     });
-  }, []);
+  }, [isAuthenticated, syncFullStateMut]);
+
+  const logoutAccount = useCallback(() => {
+    setAccountState({
+      balance: 0,
+      equity: 0,
+      unrealizedPnl: 0,
+      positions: [],
+      orders: [],
+      tradeHistory: [],
+      isActive: false,
+    });
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* noop */ }
+    if (isAuthenticated) {
+      syncFullStateMut({ positions: [], trades: [] });
+    }
+  }, [isAuthenticated, syncFullStateMut]);
 
   return {
     accountState,
@@ -471,8 +622,12 @@ export function useTradingEngine() {
     closeAllPositions,
     closeAllProfitable,
     closeAllLosing,
+    editPosition,
+    modifyPositionById,
+    removeBySymbol,
     updatePrices,
     resetAccount,
     setBalance,
+    logoutAccount,
   };
 }

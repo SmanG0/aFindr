@@ -64,7 +64,9 @@ export default function RiskManagement({
   const inputStyle: React.CSSProperties = {
     width: "100%",
     background: "transparent",
-    border: "none",
+    borderTop: "none",
+    borderRight: "none",
+    borderLeft: "none",
     borderBottom: "1px solid rgba(236,227,213,0.1)",
     padding: "8px 0",
     color: "white",

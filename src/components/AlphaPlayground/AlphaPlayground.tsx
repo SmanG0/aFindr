@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import React, { useState, useEffect, useRef, useCallback, memo } from "react";
+import { motion } from "framer-motion";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useAgentStream } from "@/hooks/useAgentStream";
-import type { ToolEvent } from "@/hooks/useAgentStream";
+import type { ToolEvent, TokenUsage } from "@/hooks/useAgentStream";
 import { ToolDataRenderer } from "./ArtifactBlocks";
 
 // ─── Friendly tool name labels ───
@@ -161,6 +163,141 @@ function ToolSteps({ toolEvents }: { toolEvents: ToolEvent[] }) {
   );
 }
 
+/** Live token counter shown during streaming */
+function PlaygroundTokenCounter({ tokenUsage }: { tokenUsage: TokenUsage }) {
+  const total = tokenUsage.total_input_tokens + tokenUsage.total_output_tokens;
+  const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : `${n}`;
+  const formatCost = (c: number) => c >= 0.01 ? `$${c.toFixed(2)}` : `$${c.toFixed(3)}`;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.2 }}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        fontSize: 10,
+        color: "var(--text-muted)",
+        opacity: 0.7,
+        marginTop: 4,
+        fontFamily: "var(--font-mono)",
+      }}
+    >
+      <motion.svg
+        animate={{ rotate: 360 }}
+        transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+        width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" style={{ flexShrink: 0 }}
+      >
+        <path d="M21 12a9 9 0 1 1-6.22-8.56" />
+      </motion.svg>
+      <span>{formatTokens(total)} tokens</span>
+      <span style={{ opacity: 0.4 }}>&middot;</span>
+      <span>{formatCost(tokenUsage.estimated_cost_usd)}</span>
+    </motion.div>
+  );
+}
+
+// ─── Code block with copy button + language label (ChatGPT style) ───
+function CodeBlock({ children, className }: { children?: React.ReactNode; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const lang = className?.replace("language-", "") || "";
+  const code = String(children).replace(/\n$/, "");
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div style={{ position: "relative", margin: "10px 0 14px" }}>
+      {/* Header bar */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        background: "rgba(255,255,255,0.04)",
+        borderRadius: "8px 8px 0 0",
+        borderTop: "1px solid rgba(236,227,213,0.06)",
+        borderRight: "1px solid rgba(236,227,213,0.06)",
+        borderLeft: "1px solid rgba(236,227,213,0.06)",
+        borderBottom: "none",
+        padding: "6px 12px",
+        fontSize: 11, color: "var(--text-muted)",
+      }}>
+        <span style={{ fontFamily: "var(--font-mono)", textTransform: "lowercase" }}>{lang || "code"}</span>
+        <button
+          onClick={handleCopy}
+          style={{
+            background: "none", border: "none", cursor: "pointer",
+            color: copied ? "var(--buy)" : "var(--text-muted)",
+            fontSize: 11, display: "flex", alignItems: "center", gap: 4,
+            padding: "2px 6px", borderRadius: 4,
+            transition: "color 150ms ease",
+          }}
+        >
+          {copied ? (
+            <>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12" /></svg>
+              Copied
+            </>
+          ) : (
+            <>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+              Copy
+            </>
+          )}
+        </button>
+      </div>
+      {/* Code body */}
+      <pre style={{
+        background: "rgba(0,0,0,0.35)",
+        border: "1px solid rgba(236,227,213,0.06)",
+        borderTop: "none",
+        borderRadius: "0 0 8px 8px",
+        padding: "14px 18px",
+        margin: 0,
+        overflowX: "auto",
+        scrollbarWidth: "thin",
+        scrollbarColor: "rgba(236,227,213,0.12) transparent",
+      }}>
+        <code style={{
+          fontSize: 13, lineHeight: 1.6,
+          color: "var(--text-secondary)",
+          fontFamily: "var(--font-mono)",
+          whiteSpace: "pre",
+        }}>
+          {code}
+        </code>
+      </pre>
+    </div>
+  );
+}
+
+// ─── Custom component overrides for ReactMarkdown ───
+const markdownComponents: Components = {
+  // Code blocks: ChatGPT-style header + copy button
+  pre({ children }) {
+    // react-markdown wraps fenced code in <pre><code>. Extract the code element.
+    const codeEl = React.Children.toArray(children).find(
+      (child) => React.isValidElement(child) && child.type === "code"
+    ) as React.ReactElement<{ children?: React.ReactNode; className?: string }> | undefined;
+    if (codeEl) {
+      return <CodeBlock className={codeEl.props.className}>{codeEl.props.children}</CodeBlock>;
+    }
+    return <pre>{children}</pre>;
+  },
+};
+
+// ─── Memoized markdown renderer (prevents re-parsing unchanged messages) ───
+const MemoMarkdown = memo(function MemoMarkdown({ content }: { content: string }) {
+  return (
+    <div className="alphy-markdown" style={{ fontSize: 14, lineHeight: 1.7, color: "var(--text-secondary)", wordBreak: "break-word" }}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{content}</ReactMarkdown>
+    </div>
+  );
+});
+
 interface AlphaPlaygroundProps {
   onNavigateToChart?: (ticker: string) => void;
 }
@@ -179,89 +316,90 @@ interface ChatEntry {
   toolData?: ToolDataEntry[];
 }
 
-const TOOL_CARDS = [
+const SLASH_COMMANDS = [
   {
-    id: "screener",
-    label: "AI Screener",
-    description: "Natural language stock screening",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-        <line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" />
-      </svg>
-    ),
+    command: "/screener",
+    label: "Screener",
+    description: "Stock screening",
+    hint: "describe what you're looking for...",
+    examples: [
+      "/screener tech stocks under $50 with revenue growth above 20%",
+      "/screener high dividend yield blue chips with low P/E",
+      "/screener small cap biotech with insider buying last 30 days",
+      "/screener oversold large caps RSI below 30 near 52-week lows",
+    ],
   },
   {
-    id: "sentiment",
-    label: "Sentiment Radar",
-    description: "AI-powered market sentiment analysis",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <circle cx="12" cy="12" r="10" />
-        <path d="M12 2 a10 10 0 0 1 0 20" fill="rgba(34,171,148,0.15)" stroke="none" />
-        <line x1="12" y1="12" x2="12" y2="4" /><line x1="12" y1="12" x2="18" y2="8" />
-        <circle cx="12" cy="12" r="2" />
-      </svg>
-    ),
+    command: "/sentiment",
+    label: "Sentiment",
+    description: "Market sentiment",
+    hint: "enter a symbol like AAPL or NVDA...",
+    examples: [
+      "/sentiment NVDA",
+      "/sentiment TSLA",
+      "/sentiment SPY",
+      "/sentiment AAPL",
+    ],
   },
   {
-    id: "whatif",
-    label: "What-If Simulator",
-    description: "Scenario analysis and stress testing",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M12 2 L12 6" /><path d="M12 18 L12 22" />
-        <path d="M4.93 4.93 L7.76 7.76" /><path d="M16.24 16.24 L19.07 19.07" />
-        <path d="M2 12 L6 12" /><path d="M18 12 L22 12" />
-        <circle cx="12" cy="12" r="4" />
-      </svg>
-    ),
+    command: "/whatif",
+    label: "What-If",
+    description: "Scenario analysis",
+    hint: "describe a scenario like 'rates rise 50bps'...",
+    examples: [
+      "/whatif Fed cuts rates 50bps at the next meeting",
+      "/whatif oil spikes to $120 per barrel",
+      "/whatif NVDA misses earnings by 10%",
+      "/whatif China invades Taiwan — impact on semis",
+    ],
   },
   {
-    id: "correlations",
-    label: "Correlation Matrix",
-    description: "Cross-asset correlation explorer",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-        <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
-      </svg>
-    ),
+    command: "/correlations",
+    label: "Correlations",
+    description: "Cross-asset",
+    hint: "list symbols like AAPL MSFT GOOGL...",
+    examples: [
+      "/correlations AAPL MSFT GOOGL AMZN META",
+      "/correlations SPY QQQ IWM DIA",
+      "/correlations BTC-USD ETH-USD GOLD GC=F",
+      "/correlations XLF XLK XLE XLV XLY",
+    ],
   },
   {
-    id: "signals",
-    label: "Signal Generator",
-    description: "AI trading signal detection",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-      </svg>
-    ),
+    command: "/signals",
+    label: "Signals",
+    description: "Signal detection",
+    hint: "enter a symbol to scan for setups...",
+    examples: [
+      "/signals NQ=F",
+      "/signals AAPL",
+      "/signals ES=F",
+      "/signals BTC-USD",
+    ],
   },
   {
-    id: "journal",
-    label: "Trade Journal AI",
-    description: "Pattern analysis from your trades",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-        <line x1="8" y1="7" x2="16" y2="7" /><line x1="8" y1="11" x2="14" y2="11" />
-      </svg>
-    ),
+    command: "/journal",
+    label: "Journal",
+    description: "Trade patterns",
+    hint: "analyze your trading patterns and habits",
+    examples: [
+      "/journal",
+      "/journal what time of day do I trade best",
+      "/journal show my biggest winners and losers",
+      "/journal am I overtrading",
+    ],
   },
 ];
 
 export default function AlphaPlayground({ onNavigateToChart }: AlphaPlaygroundProps) {
   void onNavigateToChart;
-  const [activeTool, setActiveTool] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [chatHistory, setChatHistory] = useState<ChatEntry[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
 
-  const { streamMessage, streamingText, toolEvents, isStreaming, error, abort } = useAgentStream();
+  const { streamMessage, streamingText, toolEvents, isStreaming, error, abort, liveTokenUsage } = useAgentStream();
   const thinkingPhrase = useRotatingPhrase(isStreaming && !streamingText);
 
   // Track user scroll intent via wheel/touch (not programmatic scroll events)
@@ -334,95 +472,227 @@ export default function AlphaPlayground({ onNavigateToChart }: AlphaPlaygroundPr
 
   const hasMessages = chatHistory.length > 0 || isStreaming;
 
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // ─── Tab-to-cycle example prompts ───
+  const [exampleIndex, setExampleIndex] = useState(-1); // -1 = no example active (show hint)
+
+  // Detect if prompt starts with a slash command for highlighting
+  const slashMatch = SLASH_COMMANDS.find((c) => prompt.startsWith(c.command));
+  // Show hint only when prompt is exactly the command — any keystroke (even space) hides it
+  const showSlashHint = slashMatch && prompt === slashMatch.command;
+  // Show the current ghost example when hint is visible
+  const currentExample = showSlashHint && slashMatch ? slashMatch.examples[exampleIndex >= 0 ? exampleIndex : 0] : null;
+  // The ghost portion is the text after the command
+  const ghostText = currentExample ? currentExample.slice(slashMatch!.command.length) : null;
+
+  // Tab / Right Arrow = accept ghost into real text, Down Arrow = cycle examples
+  const handleExampleKey = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showSlashHint || !slashMatch) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      // Cycle to next example
+      setExampleIndex((prev) => {
+        if (prev <= 0) return 1 % slashMatch.examples.length;
+        return (prev + 1) % slashMatch.examples.length;
+      });
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      // Cycle to previous example
+      setExampleIndex((prev) => {
+        if (prev <= 0) return slashMatch.examples.length - 1;
+        return prev - 1;
+      });
+    } else if (e.key === "Tab" || e.key === "ArrowRight") {
+      // Accept the ghost example into the input as real text
+      if (currentExample) {
+        e.preventDefault();
+        setPrompt(currentExample);
+        setExampleIndex(-1);
+      }
+    }
+  }, [showSlashHint, slashMatch, currentExample]);
+
+  // Reset example index when command changes
+  useEffect(() => {
+    setExampleIndex(-1);
+  }, [slashMatch?.command]);
+
   return (
     <div className="flex-1" style={{ background: "var(--bg)", display: "flex", flexDirection: "column", height: "100%", minHeight: 0, overflow: "hidden" }}>
       <div ref={scrollContainerRef} style={{ flex: 1, overflowY: "auto", scrollbarWidth: "thin" }}>
-        <div style={{ maxWidth: 900, margin: "0 auto", padding: "48px 32px 120px" }}>
 
-          {/* Hero — only when no messages */}
-          {!hasMessages && (
-            <>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 48, textAlign: "center" }}>
-                <AlphyHero />
-                <p style={{ fontSize: 14, color: "var(--text-muted)", maxWidth: 480, lineHeight: 1.6, margin: "8px 0 0" }}>
-                  Your AI-powered research playground. Ask me anything about the markets.
-                </p>
-              </div>
+        {/* ─── Empty state: centered mascot + prompt bar + commands ─── */}
+        {!hasMessages && (
+          <div style={{
+            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+            minHeight: "100%", padding: "0 32px 120px",
+          }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", width: "100%", maxWidth: 680 }}>
+              <AlphyHero />
+              <p style={{ fontSize: 14, color: "var(--text-muted)", maxWidth: 400, lineHeight: 1.6, margin: "8px 0 40px" }}>
+                Your AI-powered research playground. Ask me anything about the markets.
+              </p>
 
-              {/* Tool Grid */}
-              <div style={{ marginBottom: 48 }}>
-                <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--text-muted)", marginBottom: 16, fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                  Analysis Tools
-                </h2>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
-                  {TOOL_CARDS.map((tool) => {
-                    const isActive = activeTool === tool.id;
-                    return (
-                      <motion.button
-                        key={tool.id}
-                        onClick={() => setActiveTool(isActive ? null : tool.id)}
-                        whileHover={{ scale: 1.01 }}
-                        whileTap={{ scale: 0.98 }}
-                        style={{
-                          background: isActive ? "rgba(196,123,58,0.08)" : "var(--bg-raised)",
-                          border: isActive ? "1px solid rgba(196,123,58,0.3)" : "1px solid var(--glass-border)",
-                          borderRadius: 12, padding: 20, cursor: "pointer",
-                          textAlign: "left", transition: "all 120ms ease",
-                        }}
-                      >
-                        <div style={{ color: isActive ? "var(--accent-bright)" : "var(--text-muted)", marginBottom: 12, transition: "color 120ms ease" }}>
-                          {tool.icon}
-                        </div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: isActive ? "var(--text-primary)" : "var(--text-secondary)", marginBottom: 4 }}>
-                          {tool.label}
-                        </div>
-                        <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.4 }}>
-                          {tool.description}
-                        </div>
-                      </motion.button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Quick Prompts */}
-              <div>
-                <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--text-muted)", marginBottom: 16, fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                  Quick Prompts
-                </h2>
-                <div className="flex flex-wrap" style={{ gap: 8 }}>
-                  {[
-                    "Show me the options chain for AAPL",
-                    "Are insiders buying NVDA?",
-                    "What's the current yield curve?",
-                    "When does TSLA report earnings?",
-                    "Unusual options activity on SPY",
-                    "What's the latest CPI data?",
-                  ].map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => handleSend(q)}
+              {/* ─── Centered Prompt Pill ─── */}
+              <div style={{
+                width: "100%", maxWidth: 620, marginBottom: 24,
+                background: "rgba(236,227,213,0.03)",
+                borderRadius: 999,
+                border: "1px solid rgba(236,227,213,0.08)",
+                boxShadow: "0 0 0 1px rgba(236,227,213,0.02), 0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.03)",
+                backdropFilter: "blur(20px)",
+                padding: "4px 5px 4px 24px",
+                display: "flex", alignItems: "center", gap: 8,
+                transition: "border-color 200ms ease, box-shadow 200ms ease",
+              }}>
+                <div style={{ flex: 1, position: "relative" }}>
+                  {/* Colored overlay */}
+                  {slashMatch && prompt && (
+                    <div
+                      aria-hidden
                       style={{
-                        padding: "8px 14px", borderRadius: 20,
-                        background: "rgba(236,227,213,0.04)",
-                        border: "1px solid rgba(236,227,213,0.08)",
-                        color: "var(--text-muted)", fontSize: 12,
-                        fontFamily: "var(--font-mono)", cursor: "pointer",
-                        transition: "all 100ms ease",
+                        position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+                        pointerEvents: "none", display: "flex", alignItems: "center",
+                        fontSize: 14, fontFamily: "inherit", padding: "14px 0",
+                        whiteSpace: "pre", overflow: "hidden",
                       }}
-                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(196,123,58,0.3)"; e.currentTarget.style.color = "var(--text-secondary)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(236,227,213,0.08)"; e.currentTarget.style.color = "var(--text-muted)"; }}
                     >
-                      {q}
-                    </button>
-                  ))}
+                      <span style={{ color: "var(--accent-bright)" }}>{slashMatch.command}</span>
+                      {showSlashHint ? (
+                        <>
+                          <span style={{ color: "var(--text-muted)", opacity: 0.3, fontWeight: 400 }}>
+                            {ghostText || ` ${slashMatch.hint}`}
+                          </span>
+                          <span style={{
+                            color: "var(--text-muted)", opacity: 0.22, fontWeight: 400,
+                            marginLeft: 10, fontSize: 10, display: "inline-flex", alignItems: "center", gap: 4,
+                          }}>
+                            <span style={{ border: "1px solid rgba(236,227,213,0.15)", borderRadius: 3, padding: "0px 4px", fontSize: 10, lineHeight: "16px" }}>Tab</span>
+                            <span style={{ opacity: 0.6 }}>accept</span>
+                            <span style={{ border: "1px solid rgba(236,227,213,0.15)", borderRadius: 3, padding: "0px 3px", fontSize: 10, lineHeight: "16px", marginLeft: 4 }}>↓</span>
+                            <span style={{ opacity: 0.6 }}>cycle</span>
+                          </span>
+                        </>
+                      ) : (
+                        <span style={{ color: "var(--text-primary)", fontWeight: 400 }}>{prompt.slice(slashMatch.command.length)}</span>
+                      )}
+                    </div>
+                  )}
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={prompt}
+                    onChange={(e) => { setPrompt(e.target.value); setExampleIndex(-1); }}
+                    placeholder="Ask Alphy anything, or type / for commands..."
+                    disabled={isStreaming}
+                    style={{
+                      width: "100%", background: "transparent", border: "none", outline: "none",
+                      fontSize: 14,
+                      color: slashMatch ? "transparent" : "var(--text-primary)",
+                      caretColor: "var(--text-primary)",
+                      padding: "14px 0",
+                      fontFamily: "inherit", opacity: isStreaming ? 0.5 : 1,
+                    }}
+                    onFocus={(e) => {
+                      const pill = e.currentTarget.parentElement!.parentElement!;
+                      pill.style.borderColor = "rgba(196,123,58,0.3)";
+                      pill.style.boxShadow = "0 0 0 1px rgba(196,123,58,0.08), 0 8px 32px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.03)";
+                    }}
+                    onBlur={(e) => {
+                      const pill = e.currentTarget.parentElement!.parentElement!;
+                      pill.style.borderColor = "rgba(236,227,213,0.08)";
+                      pill.style.boxShadow = "0 0 0 1px rgba(236,227,213,0.02), 0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.03)";
+                    }}
+                    onKeyDown={(e) => {
+                      handleExampleKey(e);
+                      if (e.key === "Enter" && prompt.trim() && !isStreaming && !showSlashHint) {
+                        handleSend();
+                      }
+                    }}
+                  />
                 </div>
+                {isStreaming ? (
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.93 }}
+                    onClick={abort}
+                    style={{
+                      width: 42, height: 42, borderRadius: 999,
+                      background: "rgba(229,77,77,0.12)",
+                      border: "1px solid rgba(229,77,77,0.2)",
+                      cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="var(--sell)">
+                      <rect x="4" y="4" width="16" height="16" rx="2" />
+                    </svg>
+                  </motion.button>
+                ) : (
+                  <motion.button
+                    whileHover={{ scale: 1.08 }}
+                    whileTap={{ scale: 0.92 }}
+                    onClick={() => handleSend()}
+                    disabled={!prompt.trim()}
+                    style={{
+                      width: 42, height: 42, borderRadius: 999,
+                      background: prompt.trim()
+                        ? "linear-gradient(135deg, var(--accent) 0%, var(--accent-bright) 100%)"
+                        : "rgba(236,227,213,0.05)",
+                      border: "none", cursor: prompt.trim() ? "pointer" : "default",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      flexShrink: 0,
+                      boxShadow: prompt.trim() ? "0 2px 12px rgba(196,123,58,0.3)" : "none",
+                      transition: "background 150ms ease, box-shadow 150ms ease",
+                    }}
+                  >
+                    {/* Alpha symbol as send icon */}
+                    <span style={{
+                      fontSize: 18, fontWeight: 800,
+                      fontFamily: "Georgia, 'Times New Roman', serif",
+                      color: prompt.trim() ? "#fff" : "var(--text-disabled)",
+                      lineHeight: 1, marginTop: -1,
+                    }}>
+                      α
+                    </span>
+                  </motion.button>
+                )}
               </div>
-            </>
-          )}
 
-          {/* ─── Chat Messages ─── */}
-          {hasMessages && (
+              {/* ─── Slash Commands ─── */}
+              <div className="flex flex-wrap justify-center" style={{ gap: 6 }}>
+                {SLASH_COMMANDS.map((cmd) => (
+                  <button
+                    key={cmd.command}
+                    onClick={() => { setPrompt(cmd.command); inputRef.current?.focus(); }}
+                    style={{
+                      padding: "5px 10px", borderRadius: 8,
+                      background: "rgba(236,227,213,0.03)",
+                      border: "1px solid rgba(236,227,213,0.06)",
+                      cursor: "pointer", transition: "all 100ms ease",
+                      display: "flex", alignItems: "center", gap: 5,
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(196,123,58,0.25)"; e.currentTarget.style.background = "rgba(196,123,58,0.05)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(236,227,213,0.06)"; e.currentTarget.style.background = "rgba(236,227,213,0.03)"; }}
+                  >
+                    <span style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)", fontFamily: "var(--font-mono)" }}>
+                      {cmd.command}
+                    </span>
+                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                      {cmd.description}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Chat Messages ─── */}
+        {hasMessages && (
+          <div style={{ maxWidth: 900, margin: "0 auto", padding: "48px 32px 120px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
               {chatHistory.map((entry) => (
                 <div key={entry.id} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
@@ -441,13 +711,13 @@ export default function AlphaPlayground({ onNavigateToChart }: AlphaPlaygroundPr
                     {entry.role === "assistant" && entry.toolEvents && entry.toolEvents.length > 0 && (
                       <ToolSteps toolEvents={entry.toolEvents} />
                     )}
-                    <div style={{
-                      fontSize: 14, lineHeight: 1.7,
-                      color: entry.role === "user" ? "var(--text-primary)" : "var(--text-secondary)",
-                      whiteSpace: "pre-wrap", wordBreak: "break-word",
-                    }}>
-                      {entry.content}
-                    </div>
+                    {entry.role === "user" ? (
+                      <div style={{ fontSize: 14, lineHeight: 1.7, color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                        {entry.content}
+                      </div>
+                    ) : (
+                      <MemoMarkdown content={entry.content} />
+                    )}
                     {entry.role === "assistant" && entry.toolData && entry.toolData.length > 0 && (
                       <ToolDataRenderer toolData={entry.toolData} />
                     )}
@@ -462,8 +732,8 @@ export default function AlphaPlayground({ onNavigateToChart }: AlphaPlaygroundPr
                   <div style={{ flex: 1, minWidth: 0 }}>
                     {toolEvents.length > 0 && <ToolSteps toolEvents={toolEvents} />}
                     {streamingText ? (
-                      <div style={{ fontSize: 14, lineHeight: 1.7, color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                        {streamingText}
+                      <div className="alphy-markdown" style={{ fontSize: 14, lineHeight: 1.7, color: "var(--text-secondary)", wordBreak: "break-word" }}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{streamingText}</ReactMarkdown>
                         <motion.span
                           animate={{ opacity: [1, 0] }}
                           transition={{ duration: 0.5, repeat: Infinity, repeatType: "reverse" }}
@@ -484,91 +754,139 @@ export default function AlphaPlayground({ onNavigateToChart }: AlphaPlaygroundPr
                         <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{thinkingPhrase}...</span>
                       </div>
                     )}
+                    {/* Live token counter */}
+                    {liveTokenUsage && (
+                      <PlaygroundTokenCounter tokenUsage={liveTokenUsage} />
+                    )}
                   </div>
                 </div>
               )}
 
               <div ref={messagesEndRef} />
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
-      {/* ─── Sticky Prompt Bar at Bottom ─── */}
-      <div style={{
-        borderTop: "1px solid var(--glass-border)",
-        background: "var(--bg)",
-        padding: "12px 32px 16px",
-      }}>
+      {/* ─── Sticky Prompt Bar (only when chat is active) ─── */}
+      {hasMessages && (
         <div style={{
-          maxWidth: 900, margin: "0 auto",
-          background: "var(--glass)", borderRadius: 14,
-          border: "1px solid var(--glass-border)",
-          padding: "4px 4px 4px 20px",
-          display: "flex", alignItems: "center", gap: 8,
+          borderTop: "1px solid rgba(236,227,213,0.04)",
+          background: "var(--bg)",
+          padding: "12px 32px 16px",
         }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" style={{ flexShrink: 0 }}>
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10" />
-          </svg>
-          <input
-            type="text"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder={
-              activeTool === "screener" ? "e.g. Tech stocks with P/E under 20 and revenue growth > 15%..."
-              : activeTool === "sentiment" ? "e.g. What's the market sentiment on NVDA this week?"
-              : activeTool === "whatif" ? "e.g. What happens to my portfolio if rates rise 50bps?"
-              : activeTool === "correlations" ? "e.g. Show correlation between AAPL, MSFT, GOOGL over 6 months..."
-              : activeTool === "signals" ? "e.g. Find RSI divergences on S&P 500 stocks..."
-              : activeTool === "journal" ? "e.g. Analyze my win rate patterns by time of day..."
-              : "Ask Alphy anything about the markets..."
-            }
-            disabled={isStreaming}
-            style={{
-              flex: 1, background: "transparent", border: "none", outline: "none",
-              fontSize: 14, color: "var(--text-primary)", padding: "12px 0",
-              fontFamily: "inherit", opacity: isStreaming ? 0.5 : 1,
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && prompt.trim() && !isStreaming) {
-                handleSend();
-              }
-            }}
-          />
-          {isStreaming ? (
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.97 }}
-              onClick={abort}
-              style={{
-                padding: "10px 20px", borderRadius: 10,
-                background: "rgba(255,53,53,0.12)",
-                border: "1px solid rgba(255,53,53,0.2)",
-                cursor: "pointer", color: "var(--sell)",
-                fontSize: 13, fontWeight: 600,
-              }}
-            >
-              Stop
-            </motion.button>
-          ) : (
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.97 }}
-              onClick={() => handleSend()}
-              disabled={!prompt.trim()}
-              style={{
-                padding: "10px 20px", borderRadius: 10,
-                background: prompt.trim() ? "var(--accent)" : "rgba(236,227,213,0.06)",
-                border: "none", cursor: prompt.trim() ? "pointer" : "default",
-                color: prompt.trim() ? "#fff" : "var(--text-disabled)",
-                fontSize: 13, fontWeight: 600, transition: "all 150ms ease",
-              }}
-            >
-              Run
-            </motion.button>
-          )}
+          <div style={{
+            maxWidth: 680, margin: "0 auto",
+            background: "rgba(236,227,213,0.03)",
+            borderRadius: 999,
+            border: "1px solid rgba(236,227,213,0.08)",
+            boxShadow: "0 0 0 1px rgba(236,227,213,0.02), 0 4px 20px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.03)",
+            backdropFilter: "blur(20px)",
+            padding: "4px 5px 4px 24px",
+            display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <div style={{ flex: 1, position: "relative" }}>
+              {slashMatch && prompt && (
+                <div
+                  aria-hidden
+                  style={{
+                    position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+                    pointerEvents: "none", display: "flex", alignItems: "center",
+                    fontSize: 14, fontFamily: "inherit", padding: "12px 0",
+                    whiteSpace: "pre", overflow: "hidden",
+                  }}
+                >
+                  <span style={{ color: "var(--accent-bright)" }}>{slashMatch.command}</span>
+                  {showSlashHint ? (
+                    <>
+                      <span style={{ color: "var(--text-muted)", opacity: 0.3 }}>
+                        {ghostText || ` ${slashMatch.hint}`}
+                      </span>
+                      <span style={{
+                        color: "var(--text-muted)", opacity: 0.22,
+                        marginLeft: 10, fontSize: 10, display: "inline-flex", alignItems: "center", gap: 4,
+                      }}>
+                        <span style={{ border: "1px solid rgba(236,227,213,0.15)", borderRadius: 3, padding: "0px 4px", fontSize: 10, lineHeight: "16px" }}>Tab</span>
+                        <span style={{ opacity: 0.6 }}>accept</span>
+                        <span style={{ border: "1px solid rgba(236,227,213,0.15)", borderRadius: 3, padding: "0px 3px", fontSize: 10, lineHeight: "16px", marginLeft: 4 }}>↓</span>
+                        <span style={{ opacity: 0.6 }}>cycle</span>
+                      </span>
+                    </>
+                  ) : (
+                    <span style={{ color: "var(--text-primary)" }}>{prompt.slice(slashMatch.command.length)}</span>
+                  )}
+                </div>
+              )}
+              <input
+                type="text"
+                value={prompt}
+                onChange={(e) => { setPrompt(e.target.value); setExampleIndex(-1); }}
+                placeholder="Ask Alphy anything, or type / for commands..."
+                disabled={isStreaming}
+                style={{
+                  width: "100%", background: "transparent", border: "none", outline: "none",
+                  fontSize: 14,
+                  color: slashMatch ? "transparent" : "var(--text-primary)",
+                  caretColor: "var(--text-primary)",
+                  padding: "12px 0",
+                  fontFamily: "inherit", opacity: isStreaming ? 0.5 : 1,
+                }}
+                onKeyDown={(e) => {
+                  handleExampleKey(e);
+                  if (e.key === "Enter" && prompt.trim() && !isStreaming && !showSlashHint) {
+                    handleSend();
+                  }
+                }}
+              />
+            </div>
+            {isStreaming ? (
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.93 }}
+                onClick={abort}
+                style={{
+                  width: 40, height: 40, borderRadius: 999,
+                  background: "rgba(229,77,77,0.12)",
+                  border: "1px solid rgba(229,77,77,0.2)",
+                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="var(--sell)">
+                  <rect x="4" y="4" width="16" height="16" rx="2" />
+                </svg>
+              </motion.button>
+            ) : (
+              <motion.button
+                whileHover={{ scale: 1.08 }}
+                whileTap={{ scale: 0.92 }}
+                onClick={() => handleSend()}
+                disabled={!prompt.trim()}
+                style={{
+                  width: 40, height: 40, borderRadius: 999,
+                  background: prompt.trim()
+                    ? "linear-gradient(135deg, var(--accent) 0%, var(--accent-bright) 100%)"
+                    : "rgba(236,227,213,0.05)",
+                  border: "none", cursor: prompt.trim() ? "pointer" : "default",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  flexShrink: 0,
+                  boxShadow: prompt.trim() ? "0 2px 12px rgba(196,123,58,0.3)" : "none",
+                  transition: "background 150ms ease, box-shadow 150ms ease",
+                }}
+              >
+                <span style={{
+                  fontSize: 17, fontWeight: 800,
+                  fontFamily: "Georgia, 'Times New Roman', serif",
+                  color: prompt.trim() ? "#fff" : "var(--text-disabled)",
+                  lineHeight: 1, marginTop: -1,
+                }}>
+                  α
+                </span>
+              </motion.button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

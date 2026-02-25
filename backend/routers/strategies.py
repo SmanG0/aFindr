@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
+from rate_limit import limiter
 from engine.persistence import list_strategies, load_strategy
 from engine.preset_strategies import PRESET_STRATEGIES
 from engine.backtester import Backtester, BacktestConfig
@@ -36,13 +37,15 @@ def _sanitize_floats(obj):
 
 
 @router.get("")
-async def list_all():
+@limiter.limit("60/minute")
+async def list_all(request: Request):
     """List all saved strategies (newest first)."""
     return {"strategies": list_strategies()}
 
 
 @router.get("/presets")
-async def list_presets():
+@limiter.limit("60/minute")
+async def list_presets(request: Request):
     """List all 10 preset strategies with metadata."""
     presets = []
     for p in PRESET_STRATEGIES:
@@ -59,7 +62,8 @@ async def list_presets():
 
 
 @router.get("/presets/{preset_id}")
-async def get_preset(preset_id: int):
+@limiter.limit("60/minute")
+async def get_preset(request: Request, preset_id: int):
     """Get single preset strategy detail."""
     for p in PRESET_STRATEGIES:
         if p["id"] == preset_id:
@@ -77,7 +81,8 @@ async def get_preset(preset_id: int):
 
 
 @router.post("/presets/{preset_id}/run")
-async def run_preset(preset_id: int):
+@limiter.limit("30/minute")
+async def run_preset(request: Request, preset_id: int):
     """Run a preset backtest: instantiate class, backtest, Monte Carlo, persist, return result."""
     preset = None
     for p in PRESET_STRATEGIES:
@@ -146,13 +151,15 @@ async def run_preset(preset_id: int):
 
 
 @router.get("/backtest-runs")
-async def list_backtest_runs(limit: int = Query(50, ge=1, le=200)):
+@limiter.limit("60/minute")
+async def list_backtest_runs(request: Request, limit: int = Query(50, ge=1, le=200)):
     """List all backtest runs (newest first)."""
     return _sanitize_floats({"runs": backtest_repo.list_backtest_runs(limit=limit)})
 
 
 @router.get("/backtest-runs/{run_id}")
-async def get_backtest_run(run_id: str):
+@limiter.limit("60/minute")
+async def get_backtest_run(request: Request, run_id: str):
     """Get full details of a backtest run."""
     result = backtest_repo.get_backtest_run(run_id)
     if not result:
@@ -161,13 +168,15 @@ async def get_backtest_run(run_id: str):
 
 
 @router.get("/backtest-runs/{run_id}/trades")
-async def get_backtest_trades(run_id: str):
+@limiter.limit("60/minute")
+async def get_backtest_trades(request: Request, run_id: str):
     """Get all trades from a specific backtest run."""
     return {"trades": backtest_repo.get_backtest_trades(run_id)}
 
 
 @router.post("/{filename}/rerun")
-async def rerun_strategy(filename: str):
+@limiter.limit("30/minute")
+async def rerun_strategy(request: Request, filename: str):
     """Re-run a saved strategy's backtest to produce trades and equity curve.
 
     Loads the saved code + params, fetches OHLCV data for the strategy's
@@ -236,7 +245,8 @@ async def rerun_strategy(filename: str):
 
 
 @router.get("/{filename}")
-async def get_strategy(filename: str):
+@limiter.limit("60/minute")
+async def get_strategy(request: Request, filename: str):
     """Load a specific saved strategy by filename."""
     from fastapi.responses import JSONResponse
     result = load_strategy(filename)

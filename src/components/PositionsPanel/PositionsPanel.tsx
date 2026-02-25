@@ -362,6 +362,8 @@ interface PositionsPanelProps {
   onToggleStrategyTester?: () => void;
   onLoadStrategy?: (data: Record<string, unknown>) => void;
   onSetBalance?: (balance: number) => void;
+  onResetAccount?: () => void;
+  onLogoutTrading?: () => void;
 }
 
 // ═══════════════════════════════════════════════
@@ -400,6 +402,8 @@ export default function PositionsPanel({
   onToggleStrategyTester,
   onLoadStrategy,
   onSetBalance,
+  onResetAccount,
+  onLogoutTrading,
 }: PositionsPanelProps) {
   // ─── State ───
   const [topTab, setTopTab] = useState<TopTab>("broker");
@@ -562,6 +566,15 @@ export default function PositionsPanel({
               <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
             </svg>
             Strategy Report
+            <span style={{
+              fontSize: 7, fontWeight: 800, fontFamily: "var(--font-mono)",
+              padding: "1px 4px", borderRadius: 3,
+              background: "linear-gradient(135deg, rgba(196,123,58,0.2), rgba(212,175,55,0.2))",
+              color: "#d4af37", letterSpacing: "0.06em", lineHeight: 1.3,
+              border: "1px solid rgba(212,175,55,0.15)",
+            }}>
+              PRO
+            </span>
           </button>
 
           {/* Broker tab */}
@@ -640,11 +653,9 @@ export default function PositionsPanel({
           {/* Maximize toggle */}
           <button
             onClick={() => {
-              setIsMaximized(prev => {
-                const next = !prev;
-                if (next && !isExpanded) onToggle(); // auto-expand when maximizing
-                return next;
-              });
+              const willMaximize = !isMaximized;
+              setIsMaximized(willMaximize);
+              if (willMaximize && !isExpanded) onToggle(); // auto-expand when maximizing
             }}
             style={{
               width: 22, height: 22,
@@ -749,14 +760,14 @@ export default function PositionsPanel({
                 }}
               >
                 {([
-                  { id: "overview" as const, label: "Metrics" },
-                  { id: "trades" as const, label: `List of trades${backtestTrades?.length ? ` (${backtestTrades.length})` : ""}` },
-                  { id: "montecarlo" as const, label: "Monte Carlo" },
-                  { id: "walkforward" as const, label: "Walk-Forward" },
-                  { id: "analysis" as const, label: "Analysis" },
-                  { id: "heatmap" as const, label: "Heatmap" },
-                  { id: "runlog" as const, label: "Run Log" },
-                  { id: "strategies" as const, label: "Strategies" },
+                  { id: "overview" as const, label: "Metrics", premium: false },
+                  { id: "trades" as const, label: `List of trades${backtestTrades?.length ? ` (${backtestTrades.length})` : ""}`, premium: false },
+                  { id: "montecarlo" as const, label: "Monte Carlo", premium: true },
+                  { id: "walkforward" as const, label: "Walk-Forward", premium: true },
+                  { id: "analysis" as const, label: "Analysis", premium: true },
+                  { id: "heatmap" as const, label: "Heatmap", premium: true },
+                  { id: "runlog" as const, label: "Run Log", premium: false },
+                  { id: "strategies" as const, label: "Strategies", premium: false },
                 ]).map((tab) => {
                   const isActive = strategySubTab === tab.id;
                   return (
@@ -774,11 +785,17 @@ export default function PositionsPanel({
                         fontSize: 11,
                         fontFamily: "var(--font-mono)",
                         transition: "all 100ms ease",
+                        display: "flex", alignItems: "center", gap: 4,
                       }}
                       onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.color = "var(--text-secondary)"; }}
                       onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.color = isActive ? "var(--text-primary)" : "var(--text-muted)"; }}
                     >
                       {tab.label}
+                      {tab.premium && (
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="#d4af37" style={{ flexShrink: 0, opacity: 0.65 }}>
+                          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                        </svg>
+                      )}
                     </button>
                   );
                 })}
@@ -946,7 +963,7 @@ export default function PositionsPanel({
               <div style={{ flex: 1, overflow: "auto" }}>
                 {brokerSubTab === "positions" && <PositionsTab positions={accountState.positions} onClosePosition={onClosePosition} />}
                 {brokerSubTab === "orders" && <OrdersTab orders={accountState.orders} />}
-                {brokerSubTab === "account-summary" && <AccountSummaryTab accountState={accountState} tradeHistory={accountState.tradeHistory} isPaper={activeBrokerId === "paper"} onSetBalance={onSetBalance} />}
+                {brokerSubTab === "account-summary" && <AccountSummaryTab accountState={accountState} tradeHistory={accountState.tradeHistory} isPaper={activeBrokerId === "paper"} onSetBalance={onSetBalance} onResetAccount={onResetAccount} onLogoutTrading={onLogoutTrading} />}
                 {brokerSubTab === "notifications" && <NotificationsTab />}
               </div>
             </>
@@ -1306,11 +1323,13 @@ function OrdersTab({ orders }: { orders: Order[] }) {
 // ═══════════════════════════════════════════════
 // ACCOUNT SUMMARY TAB (enhanced from BalanceTab)
 // ═══════════════════════════════════════════════
-function AccountSummaryTab({ accountState, tradeHistory, isPaper, onSetBalance }: {
+function AccountSummaryTab({ accountState, tradeHistory, isPaper, onSetBalance, onResetAccount, onLogoutTrading }: {
   accountState: AccountState;
   tradeHistory: ClosedTrade[];
   isPaper?: boolean;
   onSetBalance?: (balance: number) => void;
+  onResetAccount?: () => void;
+  onLogoutTrading?: () => void;
 }) {
   const [editingBalance, setEditingBalance] = useState(false);
   const [balanceInput, setBalanceInput] = useState("");
@@ -1326,6 +1345,74 @@ function AccountSummaryTab({ accountState, tradeHistory, isPaper, onSetBalance }
   };
 
   const presets = [10000, 25000, 50000, 100000];
+
+  // ─── Inactive state: show "Start Paper Trading" card ───
+  if (!accountState.isActive && isPaper && onSetBalance) {
+    return (
+      <div style={{ padding: "24px 20px", fontFamily: "var(--font-mono)" }}>
+        <div style={{
+          padding: "20px 24px", borderRadius: 10,
+          background: "rgba(236,227,213,0.03)", border: "1px solid rgba(236,227,213,0.1)",
+          maxWidth: 480,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>
+            Start Paper Trading
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.5 }}>
+            Choose a starting balance to activate your paper trading account.
+          </div>
+
+          <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
+            {presets.map((p) => (
+              <button
+                key={p}
+                onClick={() => onSetBalance(p)}
+                style={{
+                  padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+                  background: "rgba(236,227,213,0.06)",
+                  color: "var(--text-secondary)",
+                  border: "1px solid rgba(236,227,213,0.1)", cursor: "pointer",
+                  fontFamily: "var(--font-mono)", transition: "all 100ms ease",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(236,227,213,0.12)"; e.currentTarget.style.color = "var(--text-primary)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(236,227,213,0.06)"; e.currentTarget.style.color = "var(--text-secondary)"; }}
+              >
+                ${(p / 1000).toFixed(0)}k
+              </button>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ position: "relative" }}>
+              <span style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontSize: 11, color: "var(--text-muted)" }}>$</span>
+              <input
+                type="text"
+                value={balanceInput}
+                onChange={(e) => setBalanceInput(e.target.value.replace(/[^0-9.]/g, ""))}
+                onKeyDown={(e) => e.key === "Enter" && handleSetBalance()}
+                placeholder="Custom"
+                style={{
+                  background: "var(--bg-primary)", border: "1px solid var(--divider)",
+                  borderRadius: 6, padding: "6px 10px 6px 18px", color: "var(--text-primary)",
+                  fontFamily: "var(--font-mono)", fontSize: 11, width: 110, textAlign: "right",
+                }}
+              />
+            </div>
+            <button
+              onClick={handleSetBalance}
+              style={{
+                padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+                background: "var(--buy)", color: "#000", border: "none", cursor: "pointer",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              Start
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: "16px 20px", fontFamily: "var(--font-mono)" }}>
@@ -1444,6 +1531,42 @@ function AccountSummaryTab({ accountState, tradeHistory, isPaper, onSetBalance }
           </div>
         </div>
       </div>
+
+      {/* Reset & Logout actions */}
+      {isPaper && (onResetAccount || onLogoutTrading) && (
+        <div className="flex items-center gap-2" style={{ marginTop: 20 }}>
+          {onResetAccount && (
+            <button
+              onClick={onResetAccount}
+              style={{
+                padding: "5px 12px", borderRadius: 6, fontSize: 10, fontWeight: 600,
+                background: "rgba(236,227,213,0.06)", color: "var(--text-secondary)",
+                border: "1px solid rgba(236,227,213,0.1)", cursor: "pointer",
+                fontFamily: "var(--font-mono)", transition: "all 100ms ease",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(236,227,213,0.12)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(236,227,213,0.06)"; }}
+            >
+              Reset Account
+            </button>
+          )}
+          {onLogoutTrading && (
+            <button
+              onClick={onLogoutTrading}
+              style={{
+                padding: "5px 12px", borderRadius: 6, fontSize: 10, fontWeight: 600,
+                background: "rgba(239,68,68,0.08)", color: "var(--sell)",
+                border: "1px solid rgba(239,68,68,0.15)", cursor: "pointer",
+                fontFamily: "var(--font-mono)", transition: "all 100ms ease",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.15)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
+            >
+              Logout
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

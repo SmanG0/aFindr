@@ -20,25 +20,40 @@ import PositionsPanel from "@/components/PositionsPanel/PositionsPanel";
 import { BROKER_LIST } from "@/components/PositionsPanel/PositionsPanel";
 import type { BrokerData } from "@/components/PositionsPanel/PositionsPanel";
 import ReplayControls from "@/components/ReplayControls/ReplayControls";
-import CopilotOverlay from "@/components/CopilotOverlay/CopilotOverlay";
+const CopilotOverlay = dynamic(() => import("@/components/CopilotOverlay/CopilotOverlay"), { ssr: false });
 import SymbolsSearch from "@/components/SymbolsSearch/SymbolsSearch";
-import RiskManagement from "@/components/RiskManagement/RiskManagement";
-import SettingsPage from "@/components/SettingsPage/SettingsPage";
-import NewsPage from "@/components/NewsPage/NewsPage";
+const RiskManagement = dynamic(() => import("@/components/RiskManagement/RiskManagement"), { ssr: false });
+const SettingsPage = dynamic(() => import("@/components/SettingsPage/SettingsPage"), { ssr: false });
+const NewsPage = dynamic(() => import("@/components/NewsPage/NewsPage"), { ssr: false });
 import StatusBar from "@/components/StatusBar/StatusBar";
 // BrokerStrip removed — broker info now integrated into bottom panel Broker tab
 import type { AppPage } from "@/components/PageNav/PageNav";
-import DashboardPage from "@/components/DashboardPage/DashboardPage";
-import PortfolioPage from "@/components/PortfolioPage/PortfolioPage";
-import AlphaPlayground from "@/components/AlphaPlayground/AlphaPlayground";
-import AlphyCompanion from "@/components/AlphyCompanion/AlphyCompanion";
+// LoadingScreen available for future use
+// import LoadingScreen from "@/components/LoadingScreen";
+import dynamic from "next/dynamic";
+import { FOOTER_PAGE_IDS, type FooterPageId } from "@/components/FooterPages/FooterPages";
+
+// ─── Lazy-load page-level components (only loaded when navigated to) ───
+const DashboardPage = dynamic(() => import("@/components/DashboardPage/DashboardPage"), { ssr: false });
+const PortfolioPage = dynamic(() => import("@/components/PortfolioPage/PortfolioPage"), { ssr: false });
+const AlphaPlayground = dynamic(() => import("@/components/AlphaPlayground/AlphaPlayground"), { ssr: false });
+const JournalPage = dynamic(() => import("@/components/DashboardPage/JournalPage"), { ssr: false });
+const LibraryPage = dynamic(() => import("@/components/DashboardPage/LibraryPage"), { ssr: false });
+const FooterPage = dynamic(() => import("@/components/FooterPages/FooterPages"), { ssr: false });
+// AlphyCompanion available for future use
+// import AlphyCompanion from "@/components/AlphyCompanion/AlphyCompanion";
 import { useTradingEngine } from "@/hooks/useTradingEngine";
-import { sendChatMessage, fetchOHLCV, fetchTicks, syncFullState, takeSnapshot } from "@/lib/api";
+import { getDemoAccountState } from "@/lib/demo-data";
+import { useCurrentUser } from "@/hooks/useConvexUser";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "../../convex/_generated/api";
+import { sendChatMessage, fetchOHLCV, fetchTicks, takeSnapshot } from "@/lib/api";
 // NOTE: useAgentStream added as part of Agent SDK + SSE migration.
 //       Provides real-time streaming chat via POST /api/chat/stream.
 //       Original REST sendChatMessage is preserved as fallback.
 import { useAgentStream } from "@/hooks/useAgentStream";
-import type { DoneEvent } from "@/hooks/useAgentStream";
+// DoneEvent type available for future use
+// import type { DoneEvent } from "@/hooks/useAgentStream";
 import type {
   Candle,
   Tick,
@@ -57,15 +72,102 @@ import {
   type IndicatorConfig,
   type IndicatorResult,
   type IndicatorType,
+  INDICATOR_DEFS,
   computeIndicator,
   createIndicatorConfig,
 } from "@/lib/indicators";
 import { applyTheme, isLightTheme } from "@/lib/theme";
-import IndicatorSearchModal from "@/components/IndicatorSearch/IndicatorSearchModal";
-import IndicatorEditModal from "@/components/IndicatorSearch/IndicatorEditModal";
-import ScriptOverlay from "@/components/Chart/ScriptOverlay";
+const IndicatorSearchModal = dynamic(() => import("@/components/IndicatorSearch/IndicatorSearchModal"), { ssr: false });
+const IndicatorEditModal = dynamic(() => import("@/components/IndicatorSearch/IndicatorEditModal"), { ssr: false });
+const ScriptOverlay = dynamic(() => import("@/components/Chart/ScriptOverlay"), { ssr: false });
 import { useChartScripts } from "@/hooks/useChartScripts";
 import type { ChartScript } from "@/lib/chart-scripts";
+import { useAgentControl } from "@/hooks/useAgentControl";
+import { useHoldings } from "@/hooks/useHoldings";
+import { useJournal } from "@/hooks/useJournal";
+const AgentControlOverlay = dynamic(() => import("@/components/AgentControl/AgentControlOverlay"), { ssr: false });
+const JournalPanel = dynamic(() => import("@/components/JournalPanel/JournalPanel"), { ssr: false });
+
+// ─── Parse indicator tags from Alphy responses ───
+// Extracts [INDICATOR:...] tags, detects [CLEAR_INDICATORS] and [CLEAR_SCRIPTS],
+// returns clean message with all control tags stripped.
+function parseIndicatorTags(message: string): {
+  indicators: IndicatorConfig[];
+  clearIndicators: boolean;
+  clearScripts: boolean;
+  scriptUpdates: { name: string; updates: Record<string, string> }[];
+  scriptDeletes: string[];
+  cleanMessage: string;
+} {
+  const indicators: IndicatorConfig[] = [];
+  const clearIndicators = /\[CLEAR_INDICATORS\]/i.test(message);
+  const clearScripts = /\[CLEAR_SCRIPTS\]/i.test(message);
+
+  const indicatorRegex = /\[INDICATOR:(\w+)(?::([^\]]+))?\]/g;
+  let match;
+  while ((match = indicatorRegex.exec(message)) !== null) {
+    const indType = match[1] as IndicatorType;
+    // Validate it's a known indicator type
+    if (!INDICATOR_DEFS.find((d) => d.type === indType)) continue;
+
+    const paramStr = match[2];
+    const params: Record<string, number> = {};
+    let color: string | undefined;
+    if (paramStr) {
+      for (const p of paramStr.split(",")) {
+        const [k, v] = p.split("=");
+        if (!k || !v) continue;
+        const key = k.trim();
+        const val = v.trim();
+        if (key === "color") {
+          color = val;
+        } else {
+          const num = parseFloat(val);
+          if (!isNaN(num)) params[key] = num;
+        }
+      }
+    }
+
+    const config = createIndicatorConfig(indType, {
+      ...(Object.keys(params).length > 0 ? { params } : {}),
+      ...(color ? { color } : {}),
+      source: "alphy",
+    });
+    indicators.push(config);
+  }
+
+  // Parse script update tags: [SCRIPT_UPDATE:name:key=value,key=value]
+  // Name may contain colons, so we match the LAST : that precedes key=value pairs
+  const scriptUpdates: { name: string; updates: Record<string, string> }[] = [];
+  const updateRegex = /\[SCRIPT_UPDATE:(.+?):(\w+=[^\]]+)\]/g;
+  while ((match = updateRegex.exec(message)) !== null) {
+    const name = match[1];
+    const params: Record<string, string> = {};
+    for (const p of match[2].split(",")) {
+      const [k, v] = p.split("=");
+      if (k && v) params[k.trim()] = v.trim();
+    }
+    scriptUpdates.push({ name, updates: params });
+  }
+
+  // Parse script delete tags: [SCRIPT_DELETE:name]
+  const scriptDeletes: string[] = [];
+  const deleteRegex = /\[SCRIPT_DELETE:([^\]]+)\]/g;
+  while ((match = deleteRegex.exec(message)) !== null) {
+    scriptDeletes.push(match[1]);
+  }
+
+  // Strip all control tags from message
+  const cleanMessage = message
+    .replace(/\[INDICATOR:[^\]]+\]/g, "")
+    .replace(/\[CLEAR_INDICATORS\]/gi, "")
+    .replace(/\[CLEAR_SCRIPTS\]/gi, "")
+    .replace(/\[SCRIPT_UPDATE:[^\]]+\]/g, "")
+    .replace(/\[SCRIPT_DELETE:[^\]]+\]/g, "")
+    .trim();
+
+  return { indicators, clearIndicators, clearScripts, scriptUpdates, scriptDeletes, cleanMessage };
+}
 
 const SETTINGS_STORAGE_KEY = "afindr_app_settings";
 
@@ -303,32 +405,158 @@ function BrokerSelectionModal({
 
 export default function Home() {
   // ═══════════════════════════════════════════════
-  // PAGE NAVIGATION
+  // CONVEX USER
   // ═══════════════════════════════════════════════
+  const { userId, isAuthenticated } = useCurrentUser();
+
+  // ═══════════════════════════════════════════════
+  // PAGE NAVIGATION (synced with browser history)
+  // ═══════════════════════════════════════════════
+  const VALID_PAGES = new Set<AppPage>(["trade", "dashboard", "portfolio", "news", "alpha", "settings", "journal", "library", "help-center", "contact", "report-bug", "changelog", "roadmap", "api-docs", "terms", "privacy", "risk-disclosure"]);
+
+  const parsePageFromHash = useCallback((): AppPage | null => {
+    if (typeof window === "undefined") return null;
+    const hash = window.location.hash.replace("#", "");
+    return VALID_PAGES.has(hash as AppPage) ? (hash as AppPage) : null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [currentPage, setCurrentPage] = useState<AppPage>("dashboard");
   const [hydrated, setHydrated] = useState(false);
   const [userName, setUserName] = useState("");
+  // Pending ticker to open in portfolio stock detail (set from dashboard, consumed by portfolio)
+  const [pendingPortfolioTicker, setPendingPortfolioTicker] = useState<string | null>(null);
+  const [showLogoutPrompt, setShowLogoutPrompt] = useState(false);
+  const isPopstateRef = useRef(false);
+  const exitPromptShownRef = useRef(false);
+  const backFromDashCountRef = useRef(0);
+
+  /** Navigate to a page — updates state, localStorage, and browser history.
+   *
+   *  History stack is always exactly:
+   *    [sentinel] → [dashboard] → [currentPage]  (3 max)
+   *
+   *  - Back from any non-dashboard page → dashboard
+   *  - Back from dashboard → hits sentinel → logout prompt
+   *  - Page-to-page (non-dashboard) replaces the top entry so stack never grows */
+  const navigateTo = useCallback((page: AppPage) => {
+    // Dismiss logout prompt on any navigation
+    backFromDashCountRef.current = 0;
+    setShowLogoutPrompt(false);
+    setCurrentPage((prev) => {
+      if (prev === page) return prev;
+      if (!isPopstateRef.current) {
+        if (page === "dashboard") {
+          // Going home: replace current entry with dashboard
+          window.history.replaceState({ page: "dashboard" }, "", "#dashboard");
+        } else {
+          // Always push so browser back walks the full chain
+          window.history.pushState({ page }, "", `#${page}`);
+        }
+      }
+      return page;
+    });
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem("afindr_onboarding");
+    localStorage.removeItem("afindr_onboarding_welcomed");
+    localStorage.removeItem("afindr_current_page");
+    window.location.replace("/landing");
+  }, []);
 
   useEffect(() => {
     // Redirect to landing if onboarding not completed
     try {
       const onboarding = localStorage.getItem("afindr_onboarding");
       if (!onboarding || !JSON.parse(onboarding).completed) {
+        // Dev bypass: auto-complete onboarding in development
+        if (process.env.NODE_ENV === "development") {
+          localStorage.setItem("afindr_onboarding", JSON.stringify({ completed: true, name: "Dev" }));
+          setUserName("Dev");
+        } else {
+          window.location.replace("/landing");
+          return;
+        }
+      } else {
+        const parsed = JSON.parse(onboarding);
+        if (parsed.name) setUserName(parsed.name);
+      }
+    } catch {
+      if (process.env.NODE_ENV === "development") {
+        localStorage.setItem("afindr_onboarding", JSON.stringify({ completed: true, name: "Dev" }));
+        setUserName("Dev");
+      } else {
         window.location.replace("/landing");
         return;
       }
-      const parsed = JSON.parse(onboarding);
-      if (parsed.name) setUserName(parsed.name);
-    } catch {
-      window.location.replace("/landing");
-      return;
     }
 
+    // Priority: URL hash > localStorage > default "dashboard"
+    const hashPage = parsePageFromHash();
     const saved = localStorage.getItem("afindr_current_page");
-    if (saved === "trade" || saved === "dashboard" || saved === "portfolio" || saved === "news" || saved === "alpha" || saved === "settings") {
-      setCurrentPage(saved as AppPage);
+    const initial = hashPage
+      ?? (VALID_PAGES.has(saved as AppPage) ? (saved as AppPage) : null)
+      ?? "dashboard";
+    setCurrentPage(initial);
+
+    // Simple history stack — just [guard] → [dashboard] → [page?]
+    // Back-swipe counting is handled via a ref, not history entries.
+    window.history.replaceState({ page: "dashboard", guard: true }, "", "#dashboard");
+    window.history.pushState({ page: "dashboard" }, "", "#dashboard");
+    if (initial !== "dashboard") {
+      window.history.pushState({ page: initial }, "", `#${initial}`);
     }
     setHydrated(true);
+    exitPromptShownRef.current = false;
+    backFromDashCountRef.current = 0;
+
+    // Listen for browser back / forward
+    let ready = false;
+    requestAnimationFrame(() => { ready = true; });
+
+    const onPopState = (e: PopStateEvent) => {
+      if (!ready) return;
+      const state = e.state as { page?: string; guard?: boolean } | null;
+
+      if (state?.guard) {
+        backFromDashCountRef.current++;
+
+        if (backFromDashCountRef.current >= 3) {
+          // 3rd back → leave
+          window.location.replace("/landing");
+          return;
+        }
+
+        if (backFromDashCountRef.current === 2) {
+          // 2nd back → show our custom popup
+          window.history.pushState({ page: "dashboard" }, "", "#dashboard");
+          setShowLogoutPrompt(true);
+          return;
+        }
+
+        // 1st back → silently absorb
+        window.history.pushState({ page: "dashboard" }, "", "#dashboard");
+        return;
+      }
+
+      // Normal page navigation
+      const page = state?.page as AppPage | undefined;
+      if (page && VALID_PAGES.has(page)) {
+        backFromDashCountRef.current = 0;
+        exitPromptShownRef.current = false;
+        setShowLogoutPrompt(false);
+        isPopstateRef.current = true;
+        setCurrentPage(page);
+        isPopstateRef.current = false;
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -336,6 +564,44 @@ export default function Home() {
       localStorage.setItem("afindr_current_page", currentPage);
     }
   }, [currentPage, hydrated]);
+
+  // ═══════════════════════════════════════════════
+  // DATA STATE
+  // ═══════════════════════════════════════════════
+  const [candles, setCandles] = useState<Candle[]>([]);
+  const [symbol, setSymbol] = useState(() => {
+    if (typeof window !== "undefined") {
+      // Priority: persisted symbol > profile default > NQ=F
+      const saved = localStorage.getItem("afindr_symbol");
+      if (saved) return saved;
+      try {
+        const profile = JSON.parse(localStorage.getItem("afindr_onboarding") || "{}");
+        if (profile.instruments?.[0]) return profile.instruments[0];
+      } catch { /* ignore */ }
+      return "NQ=F";
+    }
+    return "NQ=F";
+  });
+  const [interval, setInterval] = useState(() => {
+    if (typeof window !== "undefined") {
+      // Priority: persisted interval > style-based default > 1d
+      const saved = localStorage.getItem("afindr_interval");
+      if (saved) return saved;
+      try {
+        const profile = JSON.parse(localStorage.getItem("afindr_onboarding") || "{}");
+        const styleIntervals: Record<string, string> = {
+          scalper: "1m",
+          "day trader": "5m",
+          "swing trader": "4h",
+          "position trader": "1d",
+        };
+        const styleDefault = styleIntervals[profile.tradingStyle?.toLowerCase()];
+        if (styleDefault) return styleDefault;
+      } catch { /* ignore */ }
+      return "1d";
+    }
+    return "1d";
+  });
 
   // Persist symbol and interval across reloads
   useEffect(() => {
@@ -345,23 +611,6 @@ export default function Home() {
   useEffect(() => {
     localStorage.setItem("afindr_interval", interval);
   }, [interval]);
-
-  // ═══════════════════════════════════════════════
-  // DATA STATE
-  // ═══════════════════════════════════════════════
-  const [candles, setCandles] = useState<Candle[]>([]);
-  const [symbol, setSymbol] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("afindr_symbol") || "NQ=F";
-    }
-    return "NQ=F";
-  });
-  const [interval, setInterval] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("afindr_interval") || "1d";
-    }
-    return "1d";
-  });
 
   // Backtest state
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -375,9 +624,62 @@ export default function Home() {
   // Chat / AI Copilot state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [activeConversationId, setActiveConversationId] = useState<import("../../convex/_generated/dataModel").Id<"chatConversations"> | null>(null);
   // NOTE: Agent SDK + SSE streaming hook. Provides real-time token streaming.
   //       Falls back to REST sendChatMessage if streaming fails.
   const agentStream = useAgentStream();
+
+  // Convex chat mutations
+  const createConversation = useMutation(api.chat.createConversation);
+  const addChatMessage = useMutation(api.chat.addMessage);
+  const deleteConversationMut = useMutation(api.chat.deleteConversation);
+  const trackTokenUsage = useMutation(api.tokenUsage.track);
+  const convexConversations = useQuery(api.chat.listConversations, isAuthenticated ? {} : "skip");
+  const convexMessages = useQuery(
+    api.chat.listMessages,
+    activeConversationId ? { conversationId: activeConversationId } : "skip",
+  );
+
+  // Convex alert queries + mutations (for agent manage_alerts tool)
+  const convexAlerts = useQuery(api.alerts.list, isAuthenticated ? {} : "skip");
+  const alertsCreate = useMutation(api.alerts.create);
+  const alertsUpdate = useMutation(api.alerts.update);
+  const alertsRemove = useMutation(api.alerts.remove);
+
+  // Portfolio holdings + Journal entries (for agent full app awareness)
+  const { holdings: portfolioHoldings } = useHoldings();
+  const { entries: journalEntries, createEntry: createJournalEntry, updateEntry: updateJournalEntry } = useJournal();
+
+  // Restore most recent conversation from Convex on mount
+  const chatRestoredRef = useRef(false);
+  useEffect(() => {
+    if (!isAuthenticated || chatRestoredRef.current || convexConversations === undefined) return;
+    chatRestoredRef.current = true;
+    if (convexConversations.length > 0) {
+      setActiveConversationId(convexConversations[0]._id);
+    }
+  }, [isAuthenticated, convexConversations]);
+
+  // When activeConversationId changes and messages load, populate local state.
+  // Track which conversation we last restored to avoid re-populating on every convexMessages update.
+  const restoredConvIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeConversationId || convexMessages === undefined) return;
+    // Already restored this conversation
+    if (restoredConvIdRef.current === activeConversationId) return;
+    restoredConvIdRef.current = activeConversationId;
+    if (convexMessages.length > 0) {
+      const restored: ChatMessage[] = convexMessages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({
+          id: m._id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          timestamp: m.createdAt,
+        }));
+      setMessages(restored);
+    }
+  }, [activeConversationId, convexMessages]);
 
   // Update the streaming placeholder message with live text as tokens arrive
   useEffect(() => {
@@ -404,17 +706,61 @@ export default function Home() {
       const name = onboarding.name || "there";
       const experience = onboarding.experience || "beginner";
       const markets = (onboarding.markets || []).map((m: string) => m.charAt(0).toUpperCase() + m.slice(1)).join(", ");
+      const tradingStyle = onboarding.tradingStyle || "";
+      const analysisApproach: string[] = onboarding.analysisApproach || [];
+      const tradingGoals: string[] = onboarding.tradingGoals || [];
+      const defaultInstrument = onboarding.instruments?.[0] || "NQ=F";
 
+      // Build style-aware interval hint
+      const styleIntervals: Record<string, string> = {
+        scalper: "1-minute",
+        "day trader": "5-minute",
+        "swing trader": "4-hour",
+        "position trader": "daily",
+      };
+      const intervalHint = styleIntervals[tradingStyle] || "daily";
+
+      // Experience-specific tips
       const tips: Record<string, string> = {
         beginner: "I'd recommend starting with the Dashboard to get a feel for the markets, then try asking me to explain any chart pattern or indicator you're curious about.",
         intermediate: "Try asking me to backtest a strategy you've been using -- I can run Monte Carlo simulations and walk-forward analysis to validate your edge.",
         advanced: "You've got full access to backtesting, walk-forward optimization, Monte Carlo sims, and custom PineScript generation. Ask me anything.",
       };
 
+      // Build suggested prompts based on profile
+      const suggestions: string[] = [];
+      if (analysisApproach.includes("technical")) {
+        suggestions.push(`'Show me VWAP with session levels on ${defaultInstrument}'`);
+      }
+      if (analysisApproach.includes("quantitative") || experience === "advanced") {
+        suggestions.push(`'Backtest an EMA crossover on ${defaultInstrument}'`);
+      }
+      if (analysisApproach.includes("price action")) {
+        suggestions.push(`'Find support and resistance levels on ${defaultInstrument}'`);
+      }
+      if (analysisApproach.includes("fundamental")) {
+        suggestions.push(`'Show me upcoming earnings and economic events'`);
+      }
+      if (suggestions.length === 0) {
+        suggestions.push(`'What's happening with ${defaultInstrument} today?'`);
+      }
+
+      // Build personalized content line
+      const styleLine = tradingStyle
+        ? `Your ${defaultInstrument} ${intervalHint} chart is loaded. I see you're focused on ${tradingStyle.includes("trader") ? tradingStyle.replace("trader", "").trim() : tradingStyle} trading${markets ? ` in ${markets}` : ""}${analysisApproach.length > 0 ? ` with ${analysisApproach.join(" and ")}` : ""}.`
+        : `I see you're interested in ${markets || "the markets"} -- great choices.`;
+
+      const goalsLine = tradingGoals.length > 0
+        ? `\n\nI'll tailor my suggestions to help you with ${tradingGoals.map((g: string) => {
+          const goalLabels: Record<string, string> = { income: "consistent income", growth: "capital growth", learning: "learning", automated: "systematic trading" };
+          return goalLabels[g] || g;
+        }).join(" and ")}.`
+        : "";
+
       const welcome: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: `Welcome to aFindr, ${name}. I'm Alphy, your AI trading copilot.\n\nI see you're interested in ${markets || "the markets"} -- great choices. ${tips[experience] || tips.beginner}\n\nA few things I can help with:\n- Backtest any strategy with a single prompt\n- Generate PineScript indicators and overlays\n- Run Monte Carlo simulations on your results\n- Analyze trade patterns and optimal entry times\n\nWhat would you like to explore first?`,
+        content: `Welcome to aFindr, ${name}. I'm Alphy, your AI trading copilot.\n\n${styleLine} ${tips[experience] || tips.beginner}${goalsLine}\n\nTry: ${suggestions.slice(0, 2).join(" or ")}`,
         timestamp: Date.now(),
       };
       setMessages([welcome]);
@@ -451,6 +797,28 @@ export default function Home() {
   // ═══════════════════════════════════════════════
   const tradingEngine = useTradingEngine();
 
+  // ─── Demo mode (drives Dashboard + Portfolio with realistic test data) ───
+  const [demoMode, setDemoMode] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("afindr_demo_mode") === "true";
+    }
+    return false;
+  });
+
+  // Listen for toggle events dispatched by PortfolioDashboard
+  useEffect(() => {
+    const sync = () => {
+      setDemoMode(localStorage.getItem("afindr_demo_mode") === "true");
+    };
+    window.addEventListener("afindr_demo_toggle", sync);
+    return () => window.removeEventListener("afindr_demo_toggle", sync);
+  }, []);
+
+  const effectiveAccountState = useMemo(
+    () => (demoMode ? getDemoAccountState() : tradingEngine.accountState),
+    [demoMode, tradingEngine.accountState],
+  );
+
   // Update unrealized P&L as price changes
   const currentPrice = useMemo(() => {
     if (candles.length === 0) return 0;
@@ -464,21 +832,7 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPrice]);
 
-  // One-time full sync to backend DB on app load
-  const syncedRef = useRef(false);
-  useEffect(() => {
-    if (!hydrated || syncedRef.current) return;
-    syncedRef.current = true;
-    const state = tradingEngine.accountState;
-    syncFullState({
-      balance: state.balance,
-      equity: state.equity,
-      unrealizedPnl: state.unrealizedPnl,
-      positions: state.positions as unknown as Array<Record<string, unknown>>,
-      tradeHistory: state.tradeHistory as unknown as Array<Record<string, unknown>>,
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated]);
+  // One-time full sync to Convex on app load is handled inside useTradingEngine
 
   // Periodic account snapshot every 5 minutes
   useEffect(() => {
@@ -513,6 +867,7 @@ export default function Home() {
   const [showStrategyTester, setShowStrategyTester] = useState(false);
   const [showBottomPanel, setShowBottomPanel] = useState(false);
   const [showAlphySidePanel, setShowAlphySidePanel] = useState(false);
+  const [showJournalPanel, setShowJournalPanel] = useState(false);
   const [showBrokerSelector, setShowBrokerSelector] = useState(false);
   const [activeBrokerId, setActiveBrokerId] = useState("paper");
 
@@ -528,6 +883,9 @@ export default function Home() {
 
   // App settings (persisted, theme applied on change)
   const [appSettings, setAppSettingsState] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
+  const convexSettings = useQuery(api.settings.getSettings, isAuthenticated ? {} : "skip");
+  const memoryProfile = useQuery(api.memory.getProfile, isAuthenticated ? {} : "skip");
+  const upsertSettings = useMutation(api.settings.upsertSettings);
 
   useEffect(() => {
     try {
@@ -541,6 +899,25 @@ export default function Home() {
     }
   }, []);
 
+  // Convex settings reconciliation
+  const settingsReconciledRef = useRef(false);
+  useEffect(() => {
+    if (!isAuthenticated || convexSettings === undefined || settingsReconciledRef.current) return;
+    settingsReconciledRef.current = true;
+    if (convexSettings) {
+      // Convex has data → use it, update localStorage
+      const { _id: _cid, _creationTime: _ct, userId: _u, updatedAt: _t, ...rest } = convexSettings;
+      void _cid; void _ct; void _u; void _t;
+      const merged = { ...DEFAULT_APP_SETTINGS, ...rest } as AppSettings;
+      setAppSettingsState(merged);
+      try { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(merged)); } catch { /* ignore */ }
+    } else {
+      // Convex empty → seed from current settings
+      upsertSettings({ settings: appSettings });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, convexSettings]);
+
   useEffect(() => {
     applyTheme(appSettings.theme);
   }, [appSettings.theme]);
@@ -553,9 +930,13 @@ export default function Home() {
       } catch {
         /* ignore */
       }
+      // Dual-write to Convex
+      if (isAuthenticated) {
+        upsertSettings({ settings: nextVal });
+      }
       return nextVal;
     });
-  }, []);
+  }, [isAuthenticated, upsertSettings]);
 
   useEffect(() => {
     applyTheme(appSettings.theme);
@@ -688,6 +1069,14 @@ export default function Home() {
     setIndicatorConfigs((prev) => [...prev, config]);
   }, []);
 
+  // Replace all Alphy-managed indicators with a new set, preserving manual (UI-added) ones
+  const handleSetAlphyIndicators = useCallback((configs: IndicatorConfig[]) => {
+    setIndicatorConfigs((prev) => {
+      const manual = prev.filter((c) => c.source !== "alphy");
+      return [...manual, ...configs];
+    });
+  }, []);
+
   const handleRemoveIndicator = useCallback((id: string) => {
     setIndicatorConfigs((prev) => prev.filter((c) => c.id !== id));
   }, []);
@@ -708,9 +1097,272 @@ export default function Home() {
   // CHART SCRIPTS (custom visuals from Alphy)
   // ═══════════════════════════════════════════════
   const {
+    scripts: chartScripts,
     scriptResults,
     addScript: addChartScript,
-  } = useChartScripts(candles);
+    removeScript: _removeChartScript,
+    clearAllScripts: clearAllChartScripts,
+    updateScriptByName,
+    deleteScriptByName,
+  } = useChartScripts(candles, symbol);
+  void _removeChartScript;
+
+  // ═══════════════════════════════════════════════
+  // AGENT CONTROL MODE
+  // ═══════════════════════════════════════════════
+  const agentControl = useAgentControl({
+    setInterval: (v) => setInterval(v),
+    setSymbol: (v) => setSymbol(v),
+    setCurrentPage: (v) => navigateTo(v as AppPage),
+    togglePanel: (panel) => {
+      switch (panel) {
+        case "strategyTester": setShowStrategyTester((p) => !p); break;
+        case "indicatorSearch": setShowIndicatorSearch((p) => !p); break;
+        case "riskMgmt": setShowRiskMgmt((p) => !p); break;
+        case "bottomPanel": setShowBottomPanel((p) => !p); break;
+        case "alphySidePanel": setShowAlphySidePanel((p) => !p); break;
+      }
+    },
+    setDrawingTool: (v) => setDrawingTool(v as DrawingTool),
+    setTheme: (v) => setAppSettingsState((prev) => ({ ...prev, theme: v as AppSettings["theme"] })),
+    openSection: (v) => navigateTo(v as AppPage),
+  });
+
+  // Dispatch agent UI actions to control overlay
+  useEffect(() => {
+    if (agentStream.uiActions.length === 0) return;
+    const latest = agentStream.uiActions[agentStream.uiActions.length - 1];
+    if (latest?.actions) {
+      agentControl.enqueueActions(latest.actions as import("@/hooks/useAgentControl").UIAction[]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentStream.uiActions.length]);
+
+  // Dispatch agent position actions to trading engine
+  useEffect(() => {
+    if (agentStream.positionActions.length === 0) return;
+    const latest = agentStream.positionActions[agentStream.positionActions.length - 1];
+    if (!latest?.actions) return;
+
+    for (const pa of latest.actions) {
+      switch (pa.action) {
+        case "add":
+          if (pa.symbol && pa.size) {
+            const price = pa.entry_price ?? currentPrice;
+            tradingEngine.placeTrade(
+              pa.symbol,
+              (pa.side as "long" | "short") || "long",
+              pa.size,
+              price,
+              pa.stop_loss ?? undefined,
+              pa.take_profit ?? undefined,
+            );
+          }
+          break;
+        case "edit":
+          if (pa.symbol && pa.updates) {
+            tradingEngine.editPosition(pa.symbol, {
+              size: pa.updates.size as number | undefined,
+              stopLoss: pa.updates.stop_loss as number | undefined,
+              takeProfit: pa.updates.take_profit as number | undefined,
+            });
+          }
+          break;
+        case "remove":
+          if (pa.symbol) {
+            tradingEngine.removeBySymbol(pa.symbol, currentPrice);
+          }
+          break;
+        case "remove_all":
+          tradingEngine.closeAllPositions(currentPrice);
+          break;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentStream.positionActions.length]);
+
+  // Dispatch agent alert actions to Convex mutations
+  useEffect(() => {
+    if (agentStream.alertActions.length === 0 || !isAuthenticated) return;
+    const latest = agentStream.alertActions[agentStream.alertActions.length - 1];
+    if (!latest?.actions) return;
+
+    for (const aa of latest.actions) {
+      switch (aa.action) {
+        case "create":
+          if (aa.type && aa.symbol) {
+            alertsCreate({
+              type: aa.type,
+              symbol: aa.symbol,
+              condition: aa.condition,
+              targetPrice: aa.targetPrice,
+              keywords: aa.keywords,
+            });
+          }
+          break;
+        case "toggle":
+          if (aa.alertId && aa.active !== undefined) {
+            alertsUpdate({
+              alertId: aa.alertId as import("../../convex/_generated/dataModel").Id<"alerts">,
+              active: aa.active,
+            });
+          }
+          break;
+        case "delete":
+          if (aa.alertId) {
+            alertsRemove({
+              alertId: aa.alertId as import("../../convex/_generated/dataModel").Id<"alerts">,
+            });
+          }
+          break;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentStream.alertActions.length]);
+
+  // Dispatch agent drawing actions to useDrawings
+  useEffect(() => {
+    if (agentStream.drawingActions.length === 0) return;
+    const latest = agentStream.drawingActions[agentStream.drawingActions.length - 1];
+    if (!latest?.actions) return;
+
+    for (const da of latest.actions) {
+      switch (da.action) {
+        case "create":
+          if (da.drawing_type === "hline" && da.price != null) {
+            handleDrawingClick("hline", { time: Date.now() / 1000, price: da.price });
+          }
+          // For other drawing types, create via the drawings API
+          break;
+        case "delete":
+          if (da.drawing_id) {
+            removeDrawing(da.drawing_id);
+          }
+          break;
+        case "clear_all":
+          clearAllDrawings();
+          break;
+        case "update":
+          if (da.drawing_id && da.updates) {
+            updateDrawing(da.drawing_id, da.updates as Partial<Drawing>);
+          }
+          break;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentStream.drawingActions.length]);
+
+  // Dispatch agent indicator actions to indicator state
+  useEffect(() => {
+    if (agentStream.indicatorActions.length === 0) return;
+    const latest = agentStream.indicatorActions[agentStream.indicatorActions.length - 1];
+    if (!latest?.actions) return;
+
+    for (const ia of latest.actions) {
+      switch (ia.action) {
+        case "add":
+          if (ia.indicator_type) {
+            const config = createIndicatorConfig(ia.indicator_type as IndicatorType, {
+              ...(ia.params ? { params: ia.params as Record<string, number> } : {}),
+              ...(ia.color ? { color: ia.color } : {}),
+              source: "alphy",
+            });
+            setIndicatorConfigs((prev) => [...prev, config]);
+          }
+          break;
+        case "remove":
+          if (ia.indicator_type) {
+            setIndicatorConfigs((prev) => prev.filter((ic) => ic.type !== ia.indicator_type));
+          } else if (ia.indicator_id) {
+            setIndicatorConfigs((prev) => prev.filter((ic) => ic.id !== ia.indicator_id));
+          }
+          break;
+        case "update":
+          if (ia.indicator_type || ia.indicator_id) {
+            setIndicatorConfigs((prev) =>
+              prev.map((ic) => {
+                if ((ia.indicator_type && ic.type === ia.indicator_type) || (ia.indicator_id && ic.id === ia.indicator_id)) {
+                  return {
+                    ...ic,
+                    ...(ia.params ? { params: { ...ic.params, ...ia.params as Record<string, number> } } : {}),
+                    ...(ia.color ? { color: ia.color } : {}),
+                  };
+                }
+                return ic;
+              })
+            );
+          }
+          break;
+        case "clear_all":
+          setIndicatorConfigs([]);
+          break;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentStream.indicatorActions.length]);
+
+  // Dispatch agent journal actions to Convex mutations
+  useEffect(() => {
+    if (agentStream.journalActions.length === 0 || !isAuthenticated) return;
+    const latest = agentStream.journalActions[agentStream.journalActions.length - 1];
+    if (!latest?.actions) return;
+
+    for (const ja of latest.actions) {
+      switch (ja.action) {
+        case "create":
+          (async () => {
+            const entryId = await createJournalEntry();
+            if (entryId && (ja.title || ja.body || ja.market || ja.outcome || ja.mood)) {
+              await updateJournalEntry(entryId, {
+                ...(ja.title ? { title: ja.title } : {}),
+                ...(ja.body ? { body: ja.body } : {}),
+                ...(ja.market ? { market: ja.market } : {}),
+                ...(ja.outcome ? { outcome: ja.outcome as "win" | "loss" | "breakeven" } : {}),
+                ...(ja.mood ? { mood: ja.mood as "bullish" | "bearish" | "neutral" } : {}),
+              });
+            }
+          })();
+          break;
+        case "update":
+          if (ja.entry_id && ja.updates) {
+            updateJournalEntry(
+              ja.entry_id as import("../../convex/_generated/dataModel").Id<"journalEntries">,
+              ja.updates as Partial<{ title: string; body: string; market: string; outcome: "win" | "loss" | "breakeven"; mood: "bullish" | "bearish" | "neutral" }>,
+            );
+          }
+          break;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentStream.journalActions.length]);
+
+  // Dispatch agent watchlist actions to localStorage + Convex
+  useEffect(() => {
+    if (agentStream.watchlistActions.length === 0) return;
+    const latest = agentStream.watchlistActions[agentStream.watchlistActions.length - 1];
+    if (!latest?.actions) return;
+
+    for (const wa of latest.actions) {
+      try {
+        const saved = localStorage.getItem("afindr_watchlist");
+        const current: string[] = saved ? JSON.parse(saved) : [];
+        let updated: string[];
+
+        if (wa.action === "add" && !current.includes(wa.symbol)) {
+          updated = [...current, wa.symbol];
+        } else if (wa.action === "remove") {
+          updated = current.filter((s) => s !== wa.symbol);
+        } else {
+          continue;
+        }
+
+        localStorage.setItem("afindr_watchlist", JSON.stringify(updated));
+        // Dispatch storage event so WatchlistSidebar can pick it up
+        window.dispatchEvent(new StorageEvent("storage", { key: "afindr_watchlist", newValue: JSON.stringify(updated) }));
+      } catch { /* ignore */ }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentStream.watchlistActions.length]);
 
   const handleChartReady = useCallback((chart: IChartApi, series: ISeriesApi<"Candlestick">) => {
     chartApiRef.current = chart;
@@ -770,9 +1422,9 @@ export default function Home() {
   // ═══════════════════════════════════════════════
   const getPeriodForInterval = (iv: string): string => {
     switch (iv) {
-      case "1m": return "1d";
+      case "1m": return "5d";
       case "5m": return "5d";
-      case "15m": return "5d";
+      case "15m": return "1mo";
       case "30m": return "1mo";
       case "1h": return "6mo";
       case "4h": return "2y";
@@ -989,6 +1641,50 @@ export default function Home() {
   }, [symbol, interval]);
 
   // ═══════════════════════════════════════════════
+  // CHAT PERSISTENCE HELPER
+  // ═══════════════════════════════════════════════
+  const activeConvIdRef = useRef(activeConversationId);
+  activeConvIdRef.current = activeConversationId;
+
+  const persistChatMessage = useCallback(async (role: "user" | "assistant", content: string) => {
+    if (!isAuthenticated) return;
+    let convId = activeConvIdRef.current;
+    if (!convId) {
+      // Create a new conversation on first message
+      const title = content.slice(0, 60) + (content.length > 60 ? "..." : "");
+      convId = await createConversation({ title });
+      setActiveConversationId(convId);
+      activeConvIdRef.current = convId;
+    }
+    addChatMessage({ conversationId: convId, role, content });
+  }, [isAuthenticated, createConversation, addChatMessage]);
+
+  // ═══════════════════════════════════════════════
+  // CHAT HISTORY / NEW CHAT
+  // ═══════════════════════════════════════════════
+  const handleNewChat = useCallback(() => {
+    setMessages([]);
+    setActiveConversationId(null);
+    activeConvIdRef.current = null;
+    restoredConvIdRef.current = null;
+    agentStream.abort();
+  }, [agentStream]);
+
+  const handleSelectConversation = useCallback((id: typeof activeConversationId) => {
+    if (!id || id === activeConversationId) return;
+    setMessages([]);
+    setActiveConversationId(id);
+    activeConvIdRef.current = id;
+    restoredConvIdRef.current = null; // allow restore for the new conversation
+  }, [activeConversationId]);
+
+  const handleDeleteConversation = useCallback(async (id: typeof activeConversationId) => {
+    if (!id) return;
+    if (id === activeConversationId) handleNewChat();
+    await deleteConversationMut({ conversationId: id });
+  }, [activeConversationId, handleNewChat, deleteConversationMut]);
+
+  // ═══════════════════════════════════════════════
   // CHAT / AI COPILOT
   // ═══════════════════════════════════════════════
   const handleSubmit = useCallback(
@@ -998,6 +1694,8 @@ export default function Home() {
       };
       setMessages((prev) => [...prev, userMsg]);
       setIsLoading(true);
+      // Persist user message to Convex
+      persistChatMessage("user", message);
       try {
         const conversationHistory = messages.map((m) => ({ role: m.role, content: m.content }));
         const response = await sendChatMessage({ message, symbol, timeframe: interval, conversationHistory });
@@ -1193,40 +1891,43 @@ export default function Home() {
         }
 
         // Parse chart script results (may be an array from pattern detection tools)
+        // Stamp each script with the current symbol so it only shows on this chart
         let parsedChartScript: ChartScript | undefined;
-        const chartScriptsArr = (response as any).chartScripts;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const resp = response as Record<string, any>;
+        const chartScriptsArr = resp.chart_scripts ?? resp.chartScripts;
         if (Array.isArray(chartScriptsArr)) {
           for (const cs of chartScriptsArr) {
-            addChartScript(cs as ChartScript);
+            const stamped = { ...(cs as ChartScript), symbol: (cs as ChartScript).symbol ?? symbol };
+            addChartScript(stamped);
           }
           parsedChartScript = chartScriptsArr[0] as ChartScript;
-        } else if ((response as any).chartScript) {
-          parsedChartScript = (response as any).chartScript as ChartScript;
-          addChartScript(parsedChartScript);
+        } else if (resp.chart_script ?? resp.chartScript) {
+          parsedChartScript = (resp.chart_script ?? resp.chartScript) as ChartScript;
+          addChartScript({ ...parsedChartScript, symbol: parsedChartScript.symbol ?? symbol });
         }
 
-        // Parse indicator commands from AI response
-        // Format: [INDICATOR:type:param1=val1,param2=val2]
-        const indicatorRegex = /\[INDICATOR:(\w+)(?::([^\]]+))?\]/g;
-        let match;
-        while ((match = indicatorRegex.exec(response.message)) !== null) {
-          const indType = match[1] as IndicatorType;
-          const paramStr = match[2];
-          const params: Record<string, number> = {};
-          if (paramStr) {
-            for (const p of paramStr.split(",")) {
-              const [k, v] = p.split("=");
-              if (k && v) params[k.trim()] = parseFloat(v.trim());
-            }
-          }
-          handleAddIndicator(indType, Object.keys(params).length > 0 ? params : undefined);
+        // Parse indicator commands + control tags from AI response
+        const parsed = parseIndicatorTags(response.message);
+        if (parsed.clearIndicators) {
+          handleSetAlphyIndicators([]);
+        }
+        if (parsed.indicators.length > 0) {
+          handleSetAlphyIndicators(parsed.indicators);
+        }
+        if (parsed.clearScripts) {
+          clearAllChartScripts();
+        }
+        for (const su of parsed.scriptUpdates) {
+          updateScriptByName(su.name, su.updates);
+        }
+        for (const sd of parsed.scriptDeletes) {
+          deleteScriptByName(sd);
         }
 
-        // Also detect natural language indicator adds from the message content
-        const cleanMessage = response.message.replace(/\[INDICATOR:[^\]]+\]/g, "").trim();
-
+        const assistantContent = parsed.cleanMessage || response.message;
         const assistantMsg: ChatMessage = {
-          id: crypto.randomUUID(), role: "assistant", content: cleanMessage || response.message,
+          id: crypto.randomUUID(), role: "assistant", content: assistantContent,
           timestamp: Date.now(), strategyResult: backtestResult, pinescriptResult,
           monteCarloResult: parsedMonteCarlo,
           walkForwardResult: parsedWalkForward,
@@ -1234,10 +1935,12 @@ export default function Home() {
           chartScriptResult: parsedChartScript,
         };
         setMessages((prev) => [...prev, assistantMsg]);
+        persistChatMessage("assistant", assistantContent);
       } catch (err) {
+        const errorContent = `Error: ${err instanceof Error ? err.message : "Something went wrong"}`;
         const errorMsg: ChatMessage = {
           id: crypto.randomUUID(), role: "assistant",
-          content: `Error: ${err instanceof Error ? err.message : "Something went wrong"}`,
+          content: errorContent,
           timestamp: Date.now(),
         };
         setMessages((prev) => [...prev, errorMsg]);
@@ -1245,7 +1948,7 @@ export default function Home() {
         setIsLoading(false);
       }
     },
-    [messages, symbol, interval, addChartScript, handleAddIndicator]
+    [messages, symbol, interval, addChartScript, handleSetAlphyIndicators, clearAllChartScripts, updateScriptByName, deleteScriptByName, persistChatMessage]
   );
 
   // ═══════════════════════════════════════════════
@@ -1256,14 +1959,19 @@ export default function Home() {
   // ═══════════════════════════════════════════════
   const handleSubmitStreaming = useCallback(
     async (message: string) => {
+      // Capture history BEFORE adding the new user message to avoid duplication
+      // (backend appends `message` as the new turn — including it here would double it)
+      const conversationHistory = messages.map((m) => ({ role: m.role, content: m.content }));
+
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(), role: "user", content: message, timestamp: Date.now(),
       };
       setMessages((prev) => [...prev, userMsg]);
       setIsLoading(true);
+      // Persist user message to Convex
+      persistChatMessage("user", message);
 
       try {
-        const conversationHistory = messages.map((m) => ({ role: m.role, content: m.content }));
         // Capture news headlines if user is on the news page
         let newsHeadlines: string[] | undefined;
         if (currentPage === "news") {
@@ -1276,6 +1984,36 @@ export default function Home() {
           }
         }
 
+        // Load user profile for agent personalization (onboarding + AI memory)
+        let userProfile: Record<string, unknown> | undefined;
+        try {
+          const profile = JSON.parse(localStorage.getItem("afindr_onboarding") || "{}");
+          if (profile.completed) {
+            userProfile = {
+              name: profile.name || "",
+              experience: profile.experience || "",
+              tradingStyle: profile.tradingStyle || "",
+              analysisApproach: profile.analysisApproach || [],
+              tradingGoals: profile.tradingGoals || [],
+              markets: profile.markets || [],
+            };
+          }
+        } catch { /* ignore */ }
+        // Merge in AI memory profile from Convex (if available)
+        if (memoryProfile && userProfile) {
+          userProfile.profileSummary = memoryProfile.profileSummary;
+          userProfile.favoriteSymbols = memoryProfile.favoriteSymbols;
+          userProfile.strengths = memoryProfile.strengths;
+          userProfile.weaknesses = memoryProfile.weaknesses;
+        } else if (memoryProfile) {
+          userProfile = {
+            profileSummary: memoryProfile.profileSummary,
+            favoriteSymbols: memoryProfile.favoriteSymbols,
+            strengths: memoryProfile.strengths,
+            weaknesses: memoryProfile.weaknesses,
+          };
+        }
+
         const doneEvent = await agentStream.streamMessage({
           message,
           symbol,
@@ -1284,6 +2022,68 @@ export default function Home() {
           conversation_history: conversationHistory,
           current_page: currentPage,
           news_headlines: newsHeadlines,
+          active_scripts: chartScripts
+            .filter(s => s.visible && (!s.symbol || s.symbol === symbol))
+            .map(s => {
+              const genTypes = s.generators.map(g => g.type).join(",");
+              const elCount = s.elements.length;
+              const parts = [s.name];
+              if (elCount > 0) parts.push(`${elCount} elements`);
+              if (genTypes) parts.push(`generators: ${genTypes}`);
+              return parts.join(" | ");
+            }),
+          user_profile: userProfile,
+          active_alerts: convexAlerts?.map(a => ({
+            id: a._id,
+            type: a.type,
+            symbol: a.symbol,
+            condition: a.condition,
+            targetPrice: a.targetPrice,
+            keywords: a.keywords,
+            active: a.active,
+          })),
+          // ─── Full App Awareness ───
+          portfolio_holdings: portfolioHoldings.map(h => ({
+            symbol: h.symbol, shares: h.shares, avgCostBasis: h.avgCostBasis,
+          })),
+          open_positions: tradingEngine.accountState.positions.map((p) => ({
+            symbol: p.symbol, side: p.side, size: p.size,
+            entryPrice: p.entryPrice, stopLoss: p.stopLoss, takeProfit: p.takeProfit,
+            unrealizedPnl: p.unrealizedPnl,
+          })),
+          account_state: {
+            balance: tradingEngine.accountState.balance,
+            equity: tradingEngine.accountState.equity,
+            unrealizedPnl: tradingEngine.accountState.unrealizedPnl,
+          },
+          recent_journal: journalEntries?.slice(0, 5).map(j => ({
+            date: j.date, title: j.title, market: j.market,
+            outcome: j.outcome, mood: j.mood,
+            body: j.body?.slice(0, 200),
+          })),
+          watchlist_symbols: (() => {
+            try {
+              const saved = localStorage.getItem("afindr_watchlist");
+              return saved ? JSON.parse(saved) : [];
+            } catch { return []; }
+          })(),
+          chart_drawings: drawings.map(d => ({
+            type: d.type, id: d.id, color: d.color,
+            ...(d.type === "hline" ? { price: (d as { price?: number }).price } : {}),
+            ...("start" in d ? { start: d.start, end: (d as { end?: unknown }).end } : {}),
+          })),
+          active_indicators: indicatorConfigs.map(ic => ({
+            type: ic.type, params: ic.params, visible: ic.visible,
+          })),
+          app_settings: {
+            theme: appSettings.theme,
+            broker: appSettings.broker,
+            riskLimits: {
+              maxOpenPositions: riskSettings.maxOpenPositions,
+              requireSlTp: riskSettings.requireSlTp,
+              maxLossPerTradePct: riskSettings.maxLossPerTradePct,
+            },
+          },
         });
 
         if (!doneEvent) {
@@ -1305,6 +2105,7 @@ export default function Home() {
           walkForward: doneEvent.walk_forward,
           tradeAnalysis: doneEvent.trade_analysis,
           chartScripts: doneEvent.chart_scripts || (doneEvent.chart_script ? [doneEvent.chart_script] : null),
+          toolData: doneEvent.tool_data as any[] | null,
         };
 
         let backtestResult = undefined;
@@ -1478,39 +2279,73 @@ export default function Home() {
         const chartScriptsArr2 = response.chartScripts;
         if (Array.isArray(chartScriptsArr2)) {
           for (const cs of chartScriptsArr2) {
-            addChartScript(cs as unknown as ChartScript);
+            const stamped = { ...(cs as unknown as ChartScript), symbol: (cs as unknown as ChartScript).symbol ?? symbol };
+            addChartScript(stamped);
           }
           parsedChartScript = chartScriptsArr2[0] as unknown as ChartScript;
         }
         /* eslint-enable @typescript-eslint/no-explicit-any */
 
-        // Parse indicator commands
-        const indicatorRegex = /\[INDICATOR:(\w+)(?::([^\]]+))?\]/g;
-        let match;
-        while ((match = indicatorRegex.exec(response.message)) !== null) {
-          const indType = match[1] as IndicatorType;
-          const paramStr = match[2];
-          const params: Record<string, number> = {};
-          if (paramStr) {
-            for (const p of paramStr.split(",")) {
-              const [k, v] = p.split("=");
-              if (k && v) params[k.trim()] = parseFloat(v.trim());
-            }
-          }
-          handleAddIndicator(indType, Object.keys(params).length > 0 ? params : undefined);
+        // Parse indicator commands + control tags from AI response
+        const parsed = parseIndicatorTags(response.message);
+        if (process.env.NODE_ENV === "development") {
+          console.log("[Alphy] Done message:", response.message?.slice(0, 200));
+          console.log("[Alphy] Parsed indicators:", parsed.indicators.map(i => i.type));
+          console.log("[Alphy] Script updates:", parsed.scriptUpdates.length, "deletes:", parsed.scriptDeletes.length);
+        }
+        if (parsed.clearIndicators) {
+          handleSetAlphyIndicators([]);
+        }
+        if (parsed.indicators.length > 0) {
+          handleSetAlphyIndicators(parsed.indicators);
+        }
+        if (parsed.clearScripts) {
+          clearAllChartScripts();
+        }
+        for (const su of parsed.scriptUpdates) {
+          updateScriptByName(su.name, su.updates);
+        }
+        for (const sd of parsed.scriptDeletes) {
+          deleteScriptByName(sd);
         }
 
-        const cleanMessage = response.message.replace(/\[INDICATOR:[^\]]+\]/g, "").trim();
-
+        const streamAssistantContent = parsed.cleanMessage || response.message;
+        // Parse tool data for rich artifact rendering in sidebar
+        const parsedToolData = Array.isArray(response.toolData)
+          ? (response.toolData as { tool: string; input: Record<string, unknown>; data: Record<string, unknown> }[])
+          : undefined;
         const assistantMsg: ChatMessage = {
-          id: crypto.randomUUID(), role: "assistant", content: cleanMessage || response.message,
+          id: crypto.randomUUID(), role: "assistant", content: streamAssistantContent,
           timestamp: Date.now(), strategyResult: backtestResult, pinescriptResult,
           monteCarloResult: parsedMonteCarlo,
           walkForwardResult: parsedWalkForward,
           tradeAnalysisResult: parsedTradeAnalysis,
           chartScriptResult: parsedChartScript,
+          toolData: parsedToolData,
+          tokenUsage: doneEvent.token_usage ? {
+            totalTokens: doneEvent.token_usage.total_input_tokens + doneEvent.token_usage.total_output_tokens,
+            inputTokens: doneEvent.token_usage.total_input_tokens,
+            outputTokens: doneEvent.token_usage.total_output_tokens,
+            estimatedCost: doneEvent.token_usage.estimated_cost_usd,
+          } : undefined,
         };
         setMessages((prev) => [...prev, assistantMsg]);
+        persistChatMessage("assistant", streamAssistantContent);
+
+        // Persist token usage to Convex
+        if (isAuthenticated && doneEvent.token_usage) {
+          trackTokenUsage({
+            conversationId: activeConvIdRef.current ?? undefined,
+            inputTokens: doneEvent.token_usage.total_input_tokens,
+            outputTokens: doneEvent.token_usage.total_output_tokens,
+            estimatedCost: doneEvent.token_usage.estimated_cost_usd,
+            byModelJson: doneEvent.token_usage.by_model
+              ? JSON.stringify(doneEvent.token_usage.by_model)
+              : undefined,
+          }).catch((err) => {
+            console.warn("Failed to persist token usage:", err);
+          });
+        }
       } catch (err) {
         // Fall back to original REST handler
         console.warn("SSE streaming failed, falling back to REST:", err);
@@ -1522,7 +2357,7 @@ export default function Home() {
         setIsLoading(false);
       }
     },
-    [messages, symbol, interval, addChartScript, handleAddIndicator, handleSubmit, agentStream]
+    [messages, symbol, interval, addChartScript, handleSetAlphyIndicators, clearAllChartScripts, updateScriptByName, deleteScriptByName, handleSubmit, agentStream, persistChatMessage, memoryProfile, isAuthenticated, trackTokenUsage]
   );
 
   // ═══════════════════════════════════════════════
@@ -1638,10 +2473,12 @@ export default function Home() {
   // TRADE ACTIONS
   // ═══════════════════════════════════════════════
   const handleBuy = useCallback((price: number) => {
+    if (!tradingEngine.accountState.isActive) return;
     tradingEngine.placeTrade(symbol, "long", 1, price);
   }, [symbol, tradingEngine]);
 
   const handleSell = useCallback((price: number) => {
+    if (!tradingEngine.accountState.isActive) return;
     tradingEngine.placeTrade(symbol, "short", 1, price);
   }, [symbol, tradingEngine]);
 
@@ -1698,63 +2535,55 @@ export default function Home() {
   // RENDER (defer until hydrated to avoid flash)
   // ═══════════════════════════════════════════════
   if (!hydrated) {
-    return (
-      <div className="flex flex-col h-screen overflow-hidden" style={{ background: "var(--bg)" }}>
-        <div
-          className="flex flex-col items-center justify-center flex-1 gap-4"
-          style={{ color: "var(--text-muted)", fontSize: 13, fontFamily: "var(--font-mono)" }}
-        >
-          Loading…
-          <button
-            onClick={() => typeof window !== "undefined" && window.location.reload()}
-            style={{
-              fontSize: 11, color: "var(--text-secondary)", background: "transparent",
-              border: "1px solid rgba(236,227,213,0.15)", borderRadius: 6, padding: "6px 12px",
-              cursor: "pointer",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-secondary)"; }}
-          >
-            Restart
-          </button>
-        </div>
-      </div>
-    );
+    return null;
   }
 
   return (
     <div className="flex flex-col h-screen overflow-hidden" style={{ background: "var(--bg)", padding: currentPage === "trade" ? "0 7px 7px" : "0" }}>
 
+      {/* ═══ Agent Control Overlay (frosted glass + cursor) ═══ */}
+      <AgentControlOverlay
+        isActive={agentControl.isActive}
+        cursorPosition={agentControl.cursorPosition}
+        highlightedTarget={agentControl.highlightedTarget}
+        statusLabel={agentControl.statusLabel}
+        progress={agentControl.progress}
+        onCancel={agentControl.cancelControl}
+      />
+
       {/* ═══ Top Navigation Bar ═══ */}
       <Navbar1
         activePage={currentPage}
-        onPageChange={setCurrentPage}
-        onOpenCopilot={() => setShowAlphySidePanel(prev => !prev)}
+        onPageChange={navigateTo}
+        onOpenCopilot={() => { if (currentPage !== "alpha") setShowAlphySidePanel(prev => !prev); }}
         onOpenRiskMgmt={() => setShowRiskMgmt(true)}
         onOpenSymbols={() => setShowSymbols(true)}
-        onOpenSettings={() => setCurrentPage(currentPage === "settings" ? "dashboard" : "settings")}
+        onOpenSettings={() => navigateTo(currentPage === "settings" ? "dashboard" : "settings")}
         userName={userName}
+        userId={userId}
       />
 
       {/* ═══ Page Content (with optional Alphy panel on left) ═══ */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* ═══ Alphy Side Panel (left, pushes content) ═══ */}
-        <AnimatePresence>
-          {showAlphySidePanel && (
-            <CopilotOverlay
-              isOpen={showAlphySidePanel}
-              onClose={() => setShowAlphySidePanel(false)}
-              messages={messages}
-              onSendMessage={handleSubmitStreaming}
-              isLoading={isLoading}
-              symbol={symbol}
-              streamingText={agentStream.streamingText}
-              toolEvents={agentStream.toolEvents}
-              isAgentStreaming={agentStream.isStreaming}
-              agentError={agentStream.error}
-            />
-          )}
-        </AnimatePresence>
+        {/* ═══ Alphy Side Panel (left, pushes content — always mounted to preserve scroll) ═══ */}
+        <CopilotOverlay
+          isOpen={showAlphySidePanel}
+          onClose={() => setShowAlphySidePanel(false)}
+          messages={messages}
+          onSendMessage={handleSubmitStreaming}
+          isLoading={isLoading}
+          symbol={symbol}
+          streamingText={agentStream.streamingText}
+          toolEvents={agentStream.toolEvents}
+          agentError={agentStream.error}
+          liveTokenUsage={agentStream.liveTokenUsage}
+          onNewChat={handleNewChat}
+          conversations={convexConversations ?? []}
+          activeConversationId={activeConversationId as string | null}
+          onSelectConversation={(id) => handleSelectConversation(id as typeof activeConversationId)}
+          onDeleteConversation={(id) => handleDeleteConversation(id as typeof activeConversationId)}
+          currentPage={currentPage}
+        />
 
         {/* ═══ Main Content Area ═══ */}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
@@ -1774,10 +2603,10 @@ export default function Home() {
             onSell={handleSell}
             onOpenIndicators={() => setShowIndicatorSearch(true)}
             indicatorCount={indicatorConfigs.length}
-            showAccountMetrics={
-              showStrategyTester ||
-              tradingEngine.accountState.positions.length > 0
-            }
+            showAccountMetrics={tradingEngine.accountState.isActive}
+            tradingDisabled={!tradingEngine.accountState.isActive}
+            onOpenJournal={() => setShowJournalPanel(prev => !prev)}
+            showJournal={showJournalPanel}
           />
 
           {/* ═══ Main Content: Left Sidebar + Chart + Bottom Panels ═══ */}
@@ -1820,6 +2649,7 @@ export default function Home() {
                     onBuyLimit={(price) => tradingEngine.placeTrade(symbol, "long", 1, price)}
                     onSellLimit={(price) => tradingEngine.placeTrade(symbol, "short", 1, price)}
                     onClosePosition={handleClosePosition}
+                    onModifyPosition={(posId, updates) => tradingEngine.modifyPositionById(posId, updates)}
                     showBuySellButtons={appSettings.showBuySellButtons}
                     spread={spread}
                     indicators={indicatorResults}
@@ -1899,7 +2729,7 @@ export default function Home() {
             onDragStart={handleDragStart}
             activeBrokerId={activeBrokerId}
             onShowBrokerSelector={() => setShowBrokerSelector(true)}
-            accountState={tradingEngine.accountState}
+            accountState={effectiveAccountState}
             onClosePosition={handleClosePosition}
             onCloseAll={handleCloseAll}
             replayState={replayState}
@@ -1924,6 +2754,8 @@ export default function Home() {
             onToggleStrategyTester={() => setShowStrategyTester(prev => !prev)}
             onLoadStrategy={handleLoadStrategy}
             onSetBalance={tradingEngine.setBalance}
+            onResetAccount={tradingEngine.resetAccount}
+            onLogoutTrading={tradingEngine.logoutAccount}
           />
 
           <StatusBar
@@ -1936,31 +2768,58 @@ export default function Home() {
           />
                 </div>
               </>
+
+              {/* ═══ Journal Panel (right side) ═══ */}
+              <JournalPanel
+                isOpen={showJournalPanel}
+                onClose={() => setShowJournalPanel(false)}
+                onExpand={() => { setShowJournalPanel(false); navigateTo("journal"); }}
+                chartContainerRef={chartContainerRef}
+              />
           </div>
         </>
       )}
 
       {currentPage === "dashboard" && (
         <DashboardPage
-          accountState={tradingEngine.accountState}
-          onNavigateToChart={(ticker) => { setSymbol(ticker); setCurrentPage("trade"); }}
+          accountState={effectiveAccountState}
+          onNavigateToChart={(ticker) => { setSymbol(ticker); navigateTo("trade"); }}
+          onNavigateToPage={(page) => navigateTo(page)}
+          onOpenCopilot={() => setShowAlphySidePanel(prev => !prev)}
+          onSelectTicker={(ticker) => { setPendingPortfolioTicker(ticker); navigateTo("portfolio"); }}
+        />
+      )}
+
+      {currentPage === "journal" && (
+        <JournalPage
+          onBack={() => navigateTo("dashboard")}
+        />
+      )}
+
+      {currentPage === "library" && (
+        <LibraryPage
+          onBack={() => navigateTo("dashboard")}
         />
       )}
 
       {currentPage === "portfolio" && (
         <PortfolioPage
-          accountState={tradingEngine.accountState}
+          accountState={effectiveAccountState}
           currentPrice={currentPrice}
-          onNavigateToChart={(ticker) => { setSymbol(ticker); setCurrentPage("trade"); }}
+          onNavigateToChart={(ticker) => { setSymbol(ticker); navigateTo("trade"); }}
+          onPageChange={navigateTo}
+          onOpenSettings={() => navigateTo("settings")}
+          initialTicker={pendingPortfolioTicker}
+          onInitialTickerConsumed={() => setPendingPortfolioTicker(null)}
         />
       )}
 
       {currentPage === "news" && (
         <NewsPage
-          onClose={() => setCurrentPage("dashboard")}
+          onClose={() => navigateTo("dashboard")}
           onNavigateToChart={(ticker) => {
             setSymbol(ticker);
-            setCurrentPage("trade");
+            navigateTo("trade");
           }}
         />
       )}
@@ -1969,7 +2828,7 @@ export default function Home() {
         <AlphaPlayground
           onNavigateToChart={(ticker) => {
             setSymbol(ticker);
-            setCurrentPage("trade");
+            navigateTo("trade");
           }}
         />
       )}
@@ -1980,11 +2839,106 @@ export default function Home() {
           onUpdateSettings={setAppSettings}
           riskSettings={riskSettings}
           onUpdateRiskSettings={setRiskSettings}
-          onBack={() => setCurrentPage("dashboard")}
+          onBack={() => navigateTo("dashboard")}
+        />
+      )}
+
+      {FOOTER_PAGE_IDS.has(currentPage) && (
+        <FooterPage
+          pageId={currentPage as FooterPageId}
+          onBack={() => navigateTo("dashboard")}
         />
       )}
         </div>
       </div>
+
+      {/* ═══ Logout Prompt ═══ */}
+      <AnimatePresence>
+        {showLogoutPrompt && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            style={{
+              position: "fixed", inset: 0, zIndex: 9999,
+              background: "rgba(0,0,0,0.55)", backdropFilter: "blur(6px)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}
+          >
+            <motion.div
+              initial={{ scale: 0.92, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              style={{
+                background: "var(--bg-raised)", borderRadius: 16,
+                border: "1px solid var(--glass-border)", padding: "32px 28px",
+                maxWidth: 340, width: "90%", textAlign: "center",
+                boxShadow: "0 16px 48px rgba(0,0,0,0.5)",
+              }}
+            >
+              <div style={{
+                width: 48, height: 48, borderRadius: 14, margin: "0 auto 16px",
+                background: "rgba(196,123,58,0.12)", display: "flex",
+                alignItems: "center", justifyContent: "center",
+              }}>
+                <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+                  <rect width="32" height="32" rx="10" fill="var(--accent)" />
+                  <circle cx="11" cy="13" r="2" fill="#fff" />
+                  <circle cx="21" cy="13" r="2" fill="#fff" />
+                  <path d="M11 20 Q16 23 21 20" stroke="#fff" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                </svg>
+              </div>
+              <div style={{
+                fontSize: 16, fontWeight: 700, color: "var(--text-primary)",
+                fontFamily: "var(--font-mono)", marginBottom: 8,
+              }}>
+                Leaving already?
+              </div>
+              <div style={{
+                fontSize: 12, color: "var(--text-muted)",
+                fontFamily: "var(--font-mono)", lineHeight: 1.5, marginBottom: 24,
+              }}>
+                You&apos;ll be signed out and returned to the landing page.
+              </div>
+              <div className="flex items-center justify-center" style={{ gap: 10 }}>
+                <button
+                  onClick={() => {
+                    backFromDashCountRef.current = 0;
+                    setShowLogoutPrompt(false);
+                  }}
+                  style={{
+                    flex: 1, padding: "10px 0", borderRadius: 10,
+                    background: "transparent", border: "1px solid var(--glass-border)",
+                    color: "var(--text-secondary)", fontSize: 13, fontWeight: 600,
+                    fontFamily: "var(--font-mono)", cursor: "pointer",
+                    transition: "border-color 120ms ease, color 120ms ease",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.color = "var(--text-primary)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--glass-border)"; e.currentTarget.style.color = "var(--text-secondary)"; }}
+                >
+                  Stay
+                </button>
+                <button
+                  onClick={handleLogout}
+                  style={{
+                    flex: 1, padding: "10px 0", borderRadius: 10,
+                    background: "var(--accent)", border: "1px solid var(--accent)",
+                    color: "#fff", fontSize: 13, fontWeight: 600,
+                    fontFamily: "var(--font-mono)", cursor: "pointer",
+                    transition: "opacity 120ms ease",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.85"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
+                >
+                  Leave
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ═══ OVERLAYS ═══ */}
       <AnimatePresence>
@@ -1994,7 +2948,7 @@ export default function Home() {
             onClose={() => setShowSymbols(false)}
             onSelectSymbol={(s) => { setSymbol(s); setShowSymbols(false); }}
             currentSymbol={symbol}
-            accountState={tradingEngine.accountState}
+            accountState={effectiveAccountState}
           />
         )}
       </AnimatePresence>
@@ -2109,7 +3063,151 @@ export default function Home() {
         )}
       </AnimatePresence>
 
+      {/* ═══ Dev Navigation Panel (development only, draggable) ═══ */}
+      {process.env.NODE_ENV === "development" && <DevPanel currentPage={currentPage} navigateTo={navigateTo} />}
 
+    </div>
+  );
+}
+
+/* ─── Draggable Dev Panel ──────────────────────────────────── */
+
+const DEV_PANEL_POS_KEY = "afindr_dev_panel_pos";
+
+function DevPanel({ currentPage, navigateTo }: { currentPage: AppPage; navigateTo: (p: AppPage) => void }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const dragState = useRef<{ dragging: boolean; offsetX: number; offsetY: number }>({ dragging: false, offsetX: 0, offsetY: 0 });
+  const didDrag = useRef(false);
+
+  // Load persisted position or default to bottom-right
+  const [pos, setPos] = useState<{ x: number; y: number }>(() => {
+    if (typeof window === "undefined") return { x: 0, y: 0 };
+    try {
+      const saved = localStorage.getItem(DEV_PANEL_POS_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return { x: window.innerWidth - 420, y: window.innerHeight - 50 };
+  });
+
+  // Clamp to viewport on mount & resize
+  useEffect(() => {
+    const clamp = () => {
+      if (!panelRef.current) return;
+      const rect = panelRef.current.getBoundingClientRect();
+      const maxX = window.innerWidth - rect.width;
+      const maxY = window.innerHeight - rect.height;
+      setPos((prev) => ({
+        x: Math.max(0, Math.min(prev.x, maxX)),
+        y: Math.max(0, Math.min(prev.y, maxY)),
+      }));
+    };
+    clamp();
+    window.addEventListener("resize", clamp);
+    return () => window.removeEventListener("resize", clamp);
+  }, []);
+
+  // Persist position when it changes
+  useEffect(() => {
+    try { localStorage.setItem(DEV_PANEL_POS_KEY, JSON.stringify(pos)); } catch {}
+  }, [pos]);
+
+  // Drag handlers
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    // Only drag from the handle area (the DEV label)
+    if (!(e.target as HTMLElement).dataset.devDragHandle) return;
+    e.preventDefault();
+    didDrag.current = false;
+    const rect = panelRef.current!.getBoundingClientRect();
+    dragState.current = { dragging: true, offsetX: e.clientX - rect.left, offsetY: e.clientY - rect.top };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }, []);
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!dragState.current.dragging) return;
+    didDrag.current = true;
+    const el = panelRef.current!;
+    const maxX = window.innerWidth - el.offsetWidth;
+    const maxY = window.innerHeight - el.offsetHeight;
+    setPos({
+      x: Math.max(0, Math.min(e.clientX - dragState.current.offsetX, maxX)),
+      y: Math.max(0, Math.min(e.clientY - dragState.current.offsetY, maxY)),
+    });
+  }, []);
+
+  const onPointerUp = useCallback(() => {
+    dragState.current.dragging = false;
+  }, []);
+
+  return (
+    <div
+      ref={panelRef}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      style={{
+        position: "fixed",
+        left: pos.x,
+        top: pos.y,
+        zIndex: 99999,
+        background: "rgba(26,23,20,0.95)",
+        backdropFilter: "blur(12px)",
+        border: "1px solid rgba(196,123,58,0.3)",
+        borderRadius: 10,
+        padding: "6px 8px",
+        display: "flex",
+        gap: 4,
+        alignItems: "center",
+        boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
+        fontFamily: "var(--font-mono)",
+        fontSize: 9,
+        fontWeight: 600,
+        userSelect: "none",
+        touchAction: "none",
+      }}
+    >
+      {/* Drag handle */}
+      <span
+        data-dev-drag-handle="true"
+        style={{
+          color: "rgba(196,123,58,0.6)",
+          padding: "0 4px",
+          cursor: "grab",
+          userSelect: "none",
+        }}
+      >
+        DEV
+      </span>
+
+      {(["landing", "login", "onboarding"] as const).map((r) => (
+        <button
+          key={r}
+          onClick={() => { if (!didDrag.current) window.location.href = `/${r === "landing" ? "landing" : r}`; }}
+          style={{
+            padding: "3px 7px", borderRadius: 5, border: "1px dashed rgba(196,123,58,0.2)", cursor: "pointer",
+            background: "transparent", color: "rgba(236,227,213,0.3)",
+            fontSize: 9, fontFamily: "var(--font-mono)", fontWeight: 600,
+            transition: "all 80ms ease", textTransform: "capitalize",
+          }}
+        >
+          {r}
+        </button>
+      ))}
+      <span style={{ width: 1, height: 12, background: "rgba(236,227,213,0.1)" }} />
+      {(["dashboard", "trade", "journal", "library", "portfolio", "news", "alpha", "settings"] as AppPage[]).map((p) => (
+        <button
+          key={p}
+          onClick={() => { if (!didDrag.current) navigateTo(p); }}
+          style={{
+            padding: "3px 7px", borderRadius: 5, border: "none", cursor: "pointer",
+            background: currentPage === p ? "rgba(196,123,58,0.25)" : "transparent",
+            color: currentPage === p ? "#c47b3a" : "rgba(236,227,213,0.45)",
+            fontSize: 9, fontFamily: "var(--font-mono)", fontWeight: 600,
+            transition: "all 80ms ease", textTransform: "capitalize",
+          }}
+        >
+          {p}
+        </button>
+      ))}
     </div>
   );
 }

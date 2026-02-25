@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
+from rate_limit import limiter
 from data.news_fetcher import fetch_all_news, get_available_sources
 from data.stock_fetcher import fetch_stock_quote, fetch_analyst_ratings, fetch_related_stocks, fetch_stock_detail_full
 
@@ -12,7 +13,9 @@ router = APIRouter(prefix="/api/news", tags=["news"])
 
 
 @router.get("/feed")
+@limiter.limit("60/minute")
 async def get_news_feed(
+    request: Request,
     category: Optional[str] = Query(None, description="Filter by category"),
     ticker: Optional[str] = Query(None, description="Filter by ticker"),
     source: Optional[str] = Query(None, description="Filter by source"),
@@ -24,13 +27,15 @@ async def get_news_feed(
 
 
 @router.get("/sources")
-async def get_sources():
+@limiter.limit("60/minute")
+async def get_sources(request: Request):
     """Get list of configured news sources."""
     return {"sources": get_available_sources()}
 
 
 @router.get("/stock/{ticker}")
-async def get_stock_detail(ticker: str):
+@limiter.limit("60/minute")
+async def get_stock_detail(request: Request, ticker: str):
     """Get stock detail with quote, ratings, and related stocks."""
     quote = fetch_stock_quote(ticker.upper())
     if not quote:
@@ -47,7 +52,8 @@ async def get_stock_detail(ticker: str):
 
 
 @router.get("/stock/{ticker}/full")
-async def get_stock_detail_full(ticker: str):
+@limiter.limit("60/minute")
+async def get_stock_detail_full(request: Request, ticker: str):
     """Get comprehensive stock detail via yfinance: fundamentals, earnings, analyst data, ownership."""
     data = fetch_stock_detail_full(ticker.upper())
     if not data:

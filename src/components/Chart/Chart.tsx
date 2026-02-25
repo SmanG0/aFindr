@@ -1,5 +1,25 @@
 "use client";
 
+// Suppress harmless "Object is disposed" errors from lightweight-charts.
+// The library schedules internal requestAnimationFrame paints that can fire
+// after chart.remove() disposes the canvas binding. This is a known lifecycle
+// issue — the error is harmless but crashes Next.js dev overlay. We wrap rAF
+// to catch it at the source, before it can propagate to any error handler.
+if (typeof window !== "undefined" && !(window as unknown as Record<string, boolean>).__lwcRafPatched) {
+  (window as unknown as Record<string, boolean>).__lwcRafPatched = true;
+  const _origRAF = window.requestAnimationFrame;
+  window.requestAnimationFrame = function (cb: FrameRequestCallback): number {
+    return _origRAF.call(window, (time: DOMHighResTimeStamp) => {
+      try {
+        cb(time);
+      } catch (e) {
+        if (e instanceof Error && e.message === "Object is disposed") return;
+        throw e;
+      }
+    });
+  };
+}
+
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
   createChart,
@@ -8,6 +28,7 @@ import {
   HistogramSeries,
   LineStyle,
   CrosshairMode,
+  TickMarkType,
   type IChartApi,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
@@ -86,6 +107,7 @@ interface ChartProps {
   onSellMarket?: (price: number) => void;
   onClosePosition?: (id: string) => void;
   onAddAlert?: (price: number) => void;
+  onModifyPosition?: (positionId: string, updates: { stopLoss?: number; takeProfit?: number }) => void;
   showBuySellButtons?: boolean;
   spread?: number;
   // ─── Indicators ───
@@ -120,6 +142,7 @@ export default function Chart({
   onSellMarket,
   onClosePosition,
   onAddAlert,
+  onModifyPosition,
   showBuySellButtons = true,
   spread = 0.25,
   indicators = [],
@@ -160,6 +183,22 @@ export default function Chart({
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
     visible: false, x: 0, y: 0, price: 0,
   });
+
+  // ─── Draggable price-line state (SL/TP drag) ───
+  type DragLineType = "sl" | "tp";
+  interface PriceLineInfo { positionId: string; lineType: DragLineType; priceLine: IPriceLine }
+  const draggableLinesRef = useRef<PriceLineInfo[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const dragStateRef = useRef<{
+    active: boolean;
+    lineInfo: PriceLineInfo | null;
+    startY: number;
+    startPrice: number;
+  }>({ active: false, lineInfo: null, startY: 0, startPrice: 0 });
+  const onModifyPositionRef = useRef(onModifyPosition);
+  useEffect(() => { onModifyPositionRef.current = onModifyPosition; }, [onModifyPosition]);
+  const positionsRef = useRef(positions);
+  useEffect(() => { positionsRef.current = positions; }, [positions]);
 
   // ─── Alert lines ───
   const [alertLines, setAlertLines] = useState<{ price: number; id: string }[]>([]);
@@ -255,21 +294,45 @@ export default function Chart({
         borderColor: isLight ? "rgba(0,0,0,0.1)" : "rgba(236,227,213,0.05)",
         timeVisible: true,
         secondsVisible: false,
-        rightOffset: 8,
+        rightOffset: 30,
         minBarSpacing: 3,
-        tickMarkFormatter: (time: UTCTimestamp) => {
+        tickMarkFormatter: (time: UTCTimestamp, tickMarkType: TickMarkType) => {
           const d = new Date(time * 1000);
+          const isDailyOrHigher = interval && ["1d", "1wk", "1mo"].includes(interval);
+
+          // Year-level ticks → just show the year
+          if (tickMarkType === TickMarkType.Year) {
+            return d.getFullYear().toString();
+          }
+
+          // Month-level ticks → just the month name (Jan, Feb, etc.)
+          if (tickMarkType === TickMarkType.Month) {
+            return d.toLocaleDateString("en-US", { month: "short" });
+          }
+
+          // Day-level ticks on daily+ charts → show day number only
+          if (isDailyOrHigher) {
+            return d.getDate().toString();
+          }
+
+          // Intraday: midnight boundary → show month + day
           const h = d.getHours();
           const m = d.getMinutes();
           if (h === 0 && m === 0) {
             return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
           }
+
+          // Intraday time
           return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
         },
       },
       localization: {
         timeFormatter: (time: UTCTimestamp) => {
           const d = new Date(time * 1000);
+          const isDailyOrHigher = interval && ["1d", "1wk", "1mo"].includes(interval);
+          if (isDailyOrHigher) {
+            return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+          }
           return d.toLocaleString("en-US", {
             month: "short", day: "numeric", year: "numeric",
             hour: "numeric", minute: "2-digit", hour12: true,
@@ -400,6 +463,107 @@ export default function Chart({
     };
     chartEl.addEventListener("contextmenu", handleContextMenu);
 
+    // ─── Draggable SL/TP price lines ───
+    const DRAG_PROXIMITY_PX = 8;
+
+    const handleDragMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return; // left-click only
+      if (!candleSeries || draggableLinesRef.current.length === 0) return;
+
+      const rect = chartEl.getBoundingClientRect();
+      const localY = e.clientY - rect.top;
+
+      // Find the closest draggable line within DRAG_PROXIMITY_PX
+      let closest: { info: (typeof draggableLinesRef.current)[0]; dist: number } | null = null;
+      for (const info of draggableLinesRef.current) {
+        const opts = info.priceLine.options();
+        const lineY = candleSeries.priceToCoordinate(opts.price);
+        if (lineY === null) continue;
+        const dist = Math.abs(lineY - localY);
+        if (dist <= DRAG_PROXIMITY_PX && (!closest || dist < closest.dist)) {
+          closest = { info, dist };
+        }
+      }
+
+      if (!closest) return;
+
+      // Start dragging — prevent chart pan
+      e.preventDefault();
+      e.stopPropagation();
+      dragStateRef.current = {
+        active: true,
+        lineInfo: closest.info,
+        startY: localY,
+        startPrice: closest.info.priceLine.options().price,
+      };
+      chartEl.style.cursor = "ns-resize";
+      // Disable chart scrolling while dragging
+      chart.applyOptions({ handleScroll: false, handleScale: false });
+    };
+
+    const handleDragMouseMove = (e: MouseEvent) => {
+      const ds = dragStateRef.current;
+
+      if (ds.active && ds.lineInfo) {
+        // Actively dragging — update the line position
+        const rect = chartEl.getBoundingClientRect();
+        const localY = e.clientY - rect.top;
+        const newPrice = candleSeries.coordinateToPrice(localY);
+        if (newPrice !== null && newPrice > 0) {
+          const label = ds.lineInfo.lineType === "sl" ? "SL" : "TP";
+          ds.lineInfo.priceLine.applyOptions({
+            price: newPrice,
+            title: `⠿ ${label} ${newPrice.toFixed(2)}`,
+          });
+        }
+        return;
+      }
+
+      // Not dragging — show grab cursor when hovering near a draggable line
+      if (draggableLinesRef.current.length === 0) return;
+      const rect = chartEl.getBoundingClientRect();
+      const localY = e.clientY - rect.top;
+      let nearLine = false;
+      for (const info of draggableLinesRef.current) {
+        const opts = info.priceLine.options();
+        const lineY = candleSeries.priceToCoordinate(opts.price);
+        if (lineY !== null && Math.abs(lineY - localY) <= DRAG_PROXIMITY_PX) {
+          nearLine = true;
+          break;
+        }
+      }
+      chartEl.style.cursor = nearLine ? "ns-resize" : "";
+    };
+
+    const handleDragMouseUp = () => {
+      const ds = dragStateRef.current;
+      if (!ds.active || !ds.lineInfo) return;
+
+      const finalPrice = ds.lineInfo.priceLine.options().price;
+      const lineType = ds.lineInfo.lineType;
+      const positionId = ds.lineInfo.positionId;
+
+      // Reset drag state
+      dragStateRef.current = { active: false, lineInfo: null, startY: 0, startPrice: 0 };
+      chartEl.style.cursor = "";
+      chart.applyOptions({ handleScroll: true, handleScale: true });
+
+      // Only fire callback if price actually changed
+      if (Math.abs(finalPrice - ds.startPrice) > 0.001) {
+        if (onModifyPositionRef.current) {
+          const updates = lineType === "sl"
+            ? { stopLoss: finalPrice }
+            : { takeProfit: finalPrice };
+          onModifyPositionRef.current(positionId, updates);
+        }
+      }
+    };
+
+    // Use capture phase for mousedown to intercept before chart's own pan handler
+    chartEl.addEventListener("mousedown", handleDragMouseDown, true);
+    chartEl.addEventListener("mousemove", handleDragMouseMove);
+    window.addEventListener("mouseup", handleDragMouseUp);
+
     chartRef.current = chart;
     seriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
@@ -407,7 +571,10 @@ export default function Chart({
     // Expose chart/series refs to parent for DrawingOverlay
     onChartReady?.(chart, candleSeries);
 
+    let disposed = false;
+
     const handleResize = () => {
+      if (disposed) return;
       if (containerRef.current) {
         chart.applyOptions({
           width: containerRef.current.clientWidth,
@@ -420,8 +587,18 @@ export default function Chart({
     resizeObserver.observe(containerRef.current);
 
     return () => {
-      chartEl.removeEventListener("contextmenu", handleContextMenu);
+      disposed = true;
+      // Disconnect observers first to stop triggering repaints
       resizeObserver.disconnect();
+      chartEl.removeEventListener("contextmenu", handleContextMenu);
+      chartEl.removeEventListener("mousedown", handleDragMouseDown, true);
+      chartEl.removeEventListener("mousemove", handleDragMouseMove);
+      window.removeEventListener("mouseup", handleDragMouseUp);
+      dragStateRef.current = { active: false, lineInfo: null, startY: 0, startPrice: 0 };
+      draggableLinesRef.current = [];
+      // Remove chart synchronously (must happen before new chart is created)
+      // Note: lightweight-charts may have pending rAF paints that fire after
+      // this and throw "Object is disposed" — suppressed at module level above.
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
@@ -432,7 +609,7 @@ export default function Chart({
       indicatorSeriesRef.current = [];
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [theme]);
+  }, [theme, interval]);
 
   // Apply appearance changes live (without re-creating the chart)
   useEffect(() => {
@@ -536,7 +713,7 @@ export default function Chart({
     markersRef.current = createSeriesMarkers(seriesRef.current, markers);
   }, [trades]);
 
-  // ─── Position price lines (entry, SL, TP) ───
+  // ─── Position price lines (entry, SL, TP) — SL/TP are draggable ───
   useEffect(() => {
     if (!seriesRef.current) return;
     const series = seriesRef.current;
@@ -546,13 +723,15 @@ export default function Chart({
       try { series.removePriceLine(line); } catch { /* already removed */ }
     }
     priceLinesRef.current = [];
+    draggableLinesRef.current = [];
 
     if (!positions || positions.length === 0) return;
 
     const isLight = theme === "light";
+    const canDrag = !!onModifyPositionRef.current;
 
     for (const pos of positions) {
-      // Entry price line
+      // Entry price line (not draggable)
       const entryColor = pos.side === "long"
         ? (isLight ? "#26a65b" : "#22c55e")
         : (isLight ? "#dc2626" : "#ef4444");
@@ -573,34 +752,40 @@ export default function Chart({
       });
       priceLinesRef.current.push(entryLine);
 
-      // Stop Loss line
+      // Stop Loss line (draggable)
       if (pos.stopLoss !== null) {
         const slLine = series.createPriceLine({
           price: pos.stopLoss,
-          color: isLight ? "rgba(220,38,38,0.4)" : "rgba(239,68,68,0.4)",
-          lineWidth: 1,
+          color: isLight ? "rgba(220,38,38,0.5)" : "rgba(239,68,68,0.5)",
+          lineWidth: 2,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
-          title: `SL ${pos.stopLoss.toFixed(2)}`,
-          axisLabelColor: isLight ? "rgba(220,38,38,0.7)" : "rgba(239,68,68,0.7)",
-          axisLabelTextColor: "rgba(255,255,255,0.85)",
+          title: canDrag ? `⠿ SL ${pos.stopLoss.toFixed(2)}` : `SL ${pos.stopLoss.toFixed(2)}`,
+          axisLabelColor: isLight ? "rgba(220,38,38,0.8)" : "rgba(239,68,68,0.8)",
+          axisLabelTextColor: "rgba(255,255,255,0.9)",
         });
         priceLinesRef.current.push(slLine);
+        if (canDrag) {
+          draggableLinesRef.current.push({ positionId: pos.id, lineType: "sl", priceLine: slLine });
+        }
       }
 
-      // Take Profit line
+      // Take Profit line (draggable)
       if (pos.takeProfit !== null) {
         const tpLine = series.createPriceLine({
           price: pos.takeProfit,
-          color: isLight ? "rgba(22,163,74,0.4)" : "rgba(34,197,94,0.4)",
-          lineWidth: 1,
+          color: isLight ? "rgba(22,163,74,0.5)" : "rgba(34,197,94,0.5)",
+          lineWidth: 2,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
-          title: `TP ${pos.takeProfit.toFixed(2)}`,
-          axisLabelColor: isLight ? "rgba(22,163,74,0.7)" : "rgba(34,197,94,0.7)",
-          axisLabelTextColor: "rgba(255,255,255,0.85)",
+          title: canDrag ? `⠿ TP ${pos.takeProfit.toFixed(2)}` : `TP ${pos.takeProfit.toFixed(2)}`,
+          axisLabelColor: isLight ? "rgba(22,163,74,0.8)" : "rgba(34,197,94,0.8)",
+          axisLabelTextColor: "rgba(255,255,255,0.9)",
         });
         priceLinesRef.current.push(tpLine);
+        if (canDrag) {
+          draggableLinesRef.current.push({ positionId: pos.id, lineType: "tp", priceLine: tpLine });
+        }
       }
     }
   }, [positions, theme, currentPrice]);
@@ -635,6 +820,9 @@ export default function Chart({
     if (!chartRef.current) return;
     const chart = chartRef.current;
 
+    // Bail if chart is disposed (can happen during interval/theme transitions)
+    try { chart.chartElement(); } catch { return; }
+
     // Remove old indicator series
     for (const s of indicatorSeriesRef.current) {
       try { chart.removeSeries(s); } catch { /* already removed */ }
@@ -646,7 +834,7 @@ export default function Chart({
     for (const ind of indicators) {
       for (const line of ind.lines) {
         if (line.data.length === 0) continue;
-
+        try {
         const isHistogram = ind.type === "macd" && line.key === "histogram";
 
         if (isHistogram) {
@@ -695,6 +883,7 @@ export default function Chart({
           );
           indicatorSeriesRef.current.push(lineSeries);
         }
+        } catch { /* chart disposed mid-loop */ }
       }
     }
   }, [indicators]);

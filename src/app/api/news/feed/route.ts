@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// ─── In-memory cache (3 min TTL) — avoids re-fetching 6 RSS feeds ───
+const newsCache = new Map<string, { data: unknown; expires: number }>();
+const NEWS_CACHE_TTL = 180_000; // 3 minutes
+
 // ─── Multi-source RSS: Top 5 reputable free financial news sources ───
 // 1. Yahoo Finance  2. CNBC  3. MarketWatch  4. Seeking Alpha  5. Reuters (agency)
 type FeedConfig = { url: string; source: string };
@@ -147,6 +151,13 @@ export async function GET(request: NextRequest) {
     const ticker = searchParams.get("ticker");
     const limit = parseInt(searchParams.get("limit") || "50");
 
+    // Check cache first
+    const cacheKey = `${category}|${ticker || ""}|${limit}`;
+    const cached = newsCache.get(cacheKey);
+    if (cached && Date.now() < cached.expires) {
+      return NextResponse.json(cached.data);
+    }
+
     // Stock-specific: Yahoo Finance headline feed (other sources lack ticker feeds)
     if (ticker) {
       const feedUrl = `https://finance.yahoo.com/rss/headline?s=${encodeURIComponent(ticker)}`;
@@ -154,11 +165,15 @@ export async function GET(request: NextRequest) {
       if (xml) {
         const articles = parseRSS(xml, "Markets", limit, "Yahoo Finance");
         if (articles.length > 0) {
-          return NextResponse.json({ articles, count: articles.length, source: "rss", feedUrl });
+          const payload = { articles, count: articles.length, source: "rss", feedUrl };
+          newsCache.set(cacheKey, { data: payload, expires: Date.now() + NEWS_CACHE_TTL });
+          return NextResponse.json(payload);
         }
       }
       const articles = generateMockNews("Markets", limit);
-      return NextResponse.json({ articles, count: articles.length, source: "fallback" });
+      const payload = { articles, count: articles.length, source: "fallback" };
+      newsCache.set(cacheKey, { data: payload, expires: Date.now() + NEWS_CACHE_TTL });
+      return NextResponse.json(payload);
     }
 
     // Multi-source: fetch all feeds for category in parallel
@@ -180,7 +195,9 @@ export async function GET(request: NextRequest) {
 
     if (allArticles.length === 0) {
       const articles = generateMockNews(category, limit);
-      return NextResponse.json({ articles, count: articles.length, source: "fallback" });
+      const fallbackPayload = { articles, count: articles.length, source: "fallback" };
+      newsCache.set(cacheKey, { data: fallbackPayload, expires: Date.now() + NEWS_CACHE_TTL });
+      return NextResponse.json(fallbackPayload);
     }
 
     // Deduplicate by normalized title, sort by time (newest first), take limit
@@ -199,12 +216,14 @@ export async function GET(request: NextRequest) {
       })
       .slice(0, limit);
 
-    return NextResponse.json({
+    const resultPayload = {
       articles: deduped,
       count: deduped.length,
       source: "rss",
       feeds: feeds.map((f) => f.url),
-    });
+    };
+    newsCache.set(cacheKey, { data: resultPayload, expires: Date.now() + NEWS_CACHE_TTL });
+    return NextResponse.json(resultPayload);
   } catch (err) {
     return NextResponse.json(
       { error: "Failed to fetch news", detail: String(err) },

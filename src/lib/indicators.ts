@@ -15,6 +15,7 @@ export interface IndicatorConfig {
   params: Record<string, number>;
   color: string;
   visible: boolean;
+  source?: "manual" | "alphy";
 }
 
 export interface IndicatorLineData {
@@ -277,7 +278,7 @@ function calcVWAP(candles: Candle[]): (number | null)[] {
 
   for (const c of candles) {
     const d = new Date(c.time * 1000);
-    const dateStr = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    const dateStr = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
 
     if (dateStr !== lastDate) {
       cumTPV = 0;
@@ -954,6 +955,7 @@ export function createIndicatorConfig(type: IndicatorType, overrides?: Partial<I
     params: { ...def.defaultParams },
     color: DEFAULT_INDICATOR_COLOR,
     visible: true,
+    source: "manual",
     ...overrides,
   };
 }

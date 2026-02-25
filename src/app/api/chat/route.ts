@@ -21,9 +21,19 @@ export async function POST(request: NextRequest) {
       ),
     };
 
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    // Forward Convex auth token to FastAPI
+    const token = request.cookies.get("__convexAuthJWT")?.value;
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
     const res = await fetch(`${FASTAPI_URL}/api/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(backendBody),
     });
 

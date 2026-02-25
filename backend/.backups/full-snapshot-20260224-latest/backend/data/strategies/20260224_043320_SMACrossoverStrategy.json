@@ -1,0 +1,93 @@
+{
+  "name": "SMACrossoverStrategy",
+  "description": "Simple moving average crossover - buy when fast SMA crosses above slow SMA, sell when fast crosses below slow",
+  "code": "import pandas as pd\nimport numpy as np\nimport ta\nfrom engine.strategy import BaseStrategy, Signal\n\nclass SMACrossoverStrategy(BaseStrategy):\n    def on_bar(self, bar, history):\n        if len(history) < 51:\n            return None\n        \n        fast_sma = ta.trend.SMAIndicator(history['close'], window=20).sma_indicator()\n        slow_sma = ta.trend.SMAIndicator(history['close'], window=50).sma_indicator()\n        \n        current_fast = fast_sma.iloc[-1]\n        current_slow = slow_sma.iloc[-1]\n        prev_fast = fast_sma.iloc[-2]\n        prev_slow = slow_sma.iloc[-2]\n        \n        # Buy signal: fast SMA crosses above slow SMA\n        if prev_fast <= prev_slow and current_fast > current_slow:\n            return Signal(action='buy', size=1.0)\n        \n        # Sell signal: fast SMA crosses below slow SMA\n        if prev_fast >= prev_slow and current_fast < current_slow:\n            return Signal(action='sell', size=1.0)\n        \n        return None",
+  "parameters": {
+    "fast_period": 20,
+    "slow_period": 50
+  },
+  "symbol": "NQ=F",
+  "interval": "1d",
+  "created_at": "2026-02-24T04:33:20.222010",
+  "backtest_metrics": {
+    "total_trades": 4,
+    "win_rate": 0.25,
+    "loss_rate": 0.75,
+    "total_return": 65800.0,
+    "total_return_pct": 263.2,
+    "max_drawdown": -32030.0,
+    "max_drawdown_pct": -26.08,
+    "max_consecutive_losses": 3,
+    "max_consecutive_wins": 1,
+    "profit_factor": 3.05,
+    "sharpe_ratio": 5.53,
+    "avg_win": 97830.0,
+    "avg_loss": -10676.67,
+    "sortino_ratio": 44.38,
+    "calmar_ratio": 635.88,
+    "recovery_factor": 2.05,
+    "expectancy": 16450.0,
+    "expectancy_ratio": 1.54,
+    "payoff_ratio": 9.16,
+    "deflated_sharpe_ratio": 2.373,
+    "dsr_pvalue": 0.0088
+  },
+  "monte_carlo": {
+    "num_simulations": 1000,
+    "num_trades": 4,
+    "mean_return": 65800.0,
+    "median_return": 65800.0,
+    "std_return": 0.0,
+    "percentile_5": 65800.0,
+    "percentile_25": 65800.0,
+    "percentile_75": 65800.0,
+    "percentile_95": 65800.0,
+    "mean_max_drawdown": -26725.2,
+    "median_max_drawdown": -29675.0,
+    "worst_max_drawdown": -32030.0,
+    "percentile_95_drawdown": -32030.0,
+    "probability_of_ruin": 65.6,
+    "probability_of_profit": 100.0,
+    "equity_percentiles": {
+      "p5": [
+        25000.0,
+        10160.0,
+        -4675.0,
+        -7030.0,
+        90800.0
+      ],
+      "p25": [
+        25000.0,
+        10160.0,
+        7805.0,
+        93155.0,
+        90800.0
+      ],
+      "p50": [
+        25000.0,
+        22645.0,
+        107990.0,
+        105635.0,
+        90800.0
+      ],
+      "p75": [
+        25000.0,
+        22645.0,
+        107995.0,
+        105640.0,
+        90800.0
+      ],
+      "p95": [
+        25000.0,
+        122830.0,
+        120475.0,
+        105640.0,
+        90800.0
+      ]
+    },
+    "method": "reshuffle",
+    "robustness_score": null,
+    "robustness_grade": null,
+    "sub_results": null
+  }
+}

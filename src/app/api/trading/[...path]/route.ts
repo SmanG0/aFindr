@@ -13,6 +13,12 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
       "Content-Type": "application/json",
     };
 
+    // Forward Convex auth token to FastAPI
+    const token = request.cookies.get("__convexAuthJWT")?.value;
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
     const fetchOptions: RequestInit = {
       method: request.method,
       headers,

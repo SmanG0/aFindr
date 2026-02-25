@@ -2,6 +2,10 @@ import { NextRequest } from "next/server";
 
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://127.0.0.1:8000";
 
+// Force Node.js runtime for proper streaming support
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 /**
  * SSE proxy — forwards the streaming chat request to the FastAPI backend
  * and pipes the SSE event stream directly to the client.
@@ -10,9 +14,19 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    const res = await fetch(`${FASTAPI_URL}/api/chat/stream`, {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    // Forward Convex auth token to FastAPI
+    const token = request.cookies.get("__convexAuthJWT")?.value;
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    const backendRes = await fetch(`${FASTAPI_URL}/api/chat/stream`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         message: body.message,
         symbol: body.symbol || "NQ=F",
@@ -23,29 +37,60 @@ export async function POST(request: NextRequest) {
         require_approval: body.require_approval || false,
         current_page: body.current_page || undefined,
         news_headlines: body.news_headlines || undefined,
+        active_scripts: body.active_scripts || undefined,
+        user_profile: body.user_profile || undefined,
+        active_alerts: body.active_alerts || undefined,
       }),
+      cache: "no-store",
     });
 
-    if (!res.ok) {
-      const text = await res.text();
+    if (!backendRes.ok) {
+      const text = await backendRes.text();
       return new Response(
-        `event: error\ndata: ${JSON.stringify({ error: `Backend error: ${res.status}`, detail: text })}\n\n`,
+        `event: error\ndata: ${JSON.stringify({ error: `Backend error: ${backendRes.status}`, detail: text })}\n\n`,
         {
           status: 200,
           headers: {
             "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             Connection: "keep-alive",
           },
         }
       );
     }
 
-    // Pipe the SSE stream from FastAPI directly to the client
-    return new Response(res.body, {
+    // Manually pipe the backend SSE stream to avoid Next.js buffering
+    const backendBody = backendRes.body;
+    if (!backendBody) {
+      return new Response(
+        `event: error\ndata: ${JSON.stringify({ error: "No response body from backend" })}\n\n`,
+        { status: 200, headers: { "Content-Type": "text/event-stream" } }
+      );
+    }
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        const reader = backendBody.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            controller.enqueue(value);
+          }
+        } catch {
+          // Pipe failed — send synthetic error event so the frontend knows
+          const errorEvent = `event: error\ndata: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`;
+          controller.enqueue(new TextEncoder().encode(errorEvent));
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
       headers: {
         "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       },
@@ -57,7 +102,7 @@ export async function POST(request: NextRequest) {
         status: 200,
         headers: {
           "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
+          "Cache-Control": "no-cache, no-transform",
           Connection: "keep-alive",
         },
       }

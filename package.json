@@ -1,5 +1,5 @@
 {
-  "name": "repla-trading",
+  "name": "afindr",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -11,12 +11,19 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@auth/core": "^0.37.4",
+    "@convex-dev/auth": "^0.0.90",
     "@extractus/article-extractor": "^8.0.20",
+    "@upstash/redis": "^1.36.2",
+    "convex": "^1.32.0",
     "framer-motion": "^12.34.3",
+    "html-to-image": "^1.11.13",
     "lightweight-charts": "^5.1.0",
     "next": "15.1.7",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
@@ -27,6 +34,7 @@
     "concurrently": "^9.2.1",
     "eslint": "^9",
     "eslint-config-next": "15.1.7",
+    "playwright": "^1.58.2",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

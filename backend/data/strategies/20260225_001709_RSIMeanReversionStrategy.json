@@ -1,0 +1,79 @@
+{
+  "name": "RSIMeanReversionStrategy",
+  "description": "Buy when RSI crosses above 30 (oversold bounce), sell when RSI crosses above 70 (overbought exit)",
+  "code": "import pandas as pd\nimport numpy as np\nimport ta\nfrom engine.strategy import BaseStrategy, Signal\n\nclass RSIMeanReversionStrategy(BaseStrategy):\n    def on_bar(self, bar, history):\n        if len(history) < 15:\n            return None\n        \n        rsi = ta.momentum.RSIIndicator(history['close'], window=14).rsi()\n        current_rsi = rsi.iloc[-1]\n        prev_rsi = rsi.iloc[-2]\n        \n        # Buy when RSI crosses above 30\n        if prev_rsi <= 30 and current_rsi > 30:\n            return Signal(action='buy', size=1.0)\n        \n        # Sell when RSI crosses above 70\n        if prev_rsi <= 70 and current_rsi > 70:\n            return Signal(action='close')\n        \n        return None",
+  "parameters": {
+    "rsi_period": 14,
+    "oversold_threshold": 30,
+    "overbought_threshold": 70
+  },
+  "symbol": "ES=F",
+  "interval": "1d",
+  "created_at": "2026-02-25T00:17:09.953703",
+  "backtest_metrics": {
+    "total_trades": 1,
+    "win_rate": 1.0,
+    "loss_rate": 0.0,
+    "total_return": 15362.5,
+    "total_return_pct": 61.45,
+    "max_drawdown": 0.0,
+    "max_drawdown_pct": 0.0,
+    "max_consecutive_losses": 0,
+    "max_consecutive_wins": 1,
+    "profit_factor": 9999.99,
+    "sharpe_ratio": 0.0,
+    "avg_win": 15362.5,
+    "avg_loss": 0.0,
+    "sortino_ratio": 0.0,
+    "calmar_ratio": 0.0,
+    "recovery_factor": 0.0,
+    "expectancy": 15362.5,
+    "expectancy_ratio": 15362.5,
+    "payoff_ratio": 0.0,
+    "deflated_sharpe_ratio": 0.0,
+    "dsr_pvalue": 1.0
+  },
+  "monte_carlo": {
+    "num_simulations": 1000,
+    "num_trades": 1,
+    "mean_return": 15362.5,
+    "median_return": 15362.5,
+    "std_return": 0.0,
+    "percentile_5": 15362.5,
+    "percentile_25": 15362.5,
+    "percentile_75": 15362.5,
+    "percentile_95": 15362.5,
+    "mean_max_drawdown": 0.0,
+    "median_max_drawdown": 0.0,
+    "worst_max_drawdown": 0.0,
+    "percentile_95_drawdown": 0.0,
+    "probability_of_ruin": 0.0,
+    "probability_of_profit": 100.0,
+    "equity_percentiles": {
+      "p5": [
+        25000.0,
+        40362.5
+      ],
+      "p25": [
+        25000.0,
+        40362.5
+      ],
+      "p50": [
+        25000.0,
+        40362.5
+      ],
+      "p75": [
+        25000.0,
+        40362.5
+      ],
+      "p95": [
+        25000.0,
+        40362.5
+      ]
+    },
+    "method": "reshuffle",
+    "robustness_score": null,
+    "robustness_grade": null,
+    "sub_results": null
+  }
+}

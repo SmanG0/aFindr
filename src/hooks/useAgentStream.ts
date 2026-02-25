@@ -31,13 +31,16 @@ export interface ToolStartEvent {
   run_id: string;
   tool_name: string;
   tool_input: Record<string, unknown>;
+  tool_use_id?: string;
 }
 
 export interface ToolResultEvent {
   run_id: string;
   tool_name: string;
-  status: "success" | "error" | "denied";
+  tool_use_id?: string;
+  status: "success" | "error" | "denied" | "timeout";
   result?: Record<string, unknown>;
+  message?: string;
 }
 
 export interface ApprovalRequestEvent {
@@ -46,6 +49,17 @@ export interface ApprovalRequestEvent {
   tool_input: Record<string, unknown>;
   tool_use_id: string;
   message: string;
+}
+
+export interface TokenUsage {
+  total_input_tokens: number;
+  total_output_tokens: number;
+  estimated_cost_usd: number;
+  by_model?: Record<string, {
+    input_tokens: number;
+    output_tokens: number;
+    estimated_cost_usd: number;
+  }>;
 }
 
 export interface DoneEvent {
@@ -60,6 +74,7 @@ export interface DoneEvent {
   chart_script?: Record<string, unknown> | null;
   chart_scripts?: Record<string, unknown>[] | null;
   tool_data?: Record<string, unknown>[] | null;
+  token_usage?: TokenUsage | null;
   duration_ms?: number;
   hit_max_rounds?: boolean;
 }
@@ -69,12 +84,93 @@ export interface ErrorEvent {
   run_id?: string;
 }
 
+export interface UIActionEvent {
+  run_id: string;
+  actions: { action: string; value: string; label?: string }[];
+}
+
+export interface PositionActionEvent {
+  run_id: string;
+  actions: {
+    action: "add" | "edit" | "remove" | "remove_all";
+    symbol?: string;
+    side?: string;
+    size?: number;
+    entry_price?: number | null;
+    stop_loss?: number | null;
+    take_profit?: number | null;
+    updates?: Record<string, unknown>;
+  }[];
+}
+
+export interface AlertActionEvent {
+  run_id: string;
+  actions: {
+    action: "create" | "toggle" | "delete";
+    type?: "price" | "news";
+    symbol?: string;
+    condition?: "above" | "below" | "crosses_above" | "crosses_below";
+    targetPrice?: number;
+    keywords?: string[];
+    alertId?: string;
+    active?: boolean;
+  }[];
+}
+
+export interface DrawingActionEvent {
+  run_id: string;
+  actions: {
+    action: "create" | "update" | "delete" | "clear_all";
+    drawing_type?: string;
+    price?: number;
+    start?: { time: number; price: number };
+    end?: { time: number; price: number };
+    color?: string;
+    style?: string;
+    drawing_id?: string;
+    updates?: Record<string, unknown>;
+  }[];
+}
+
+export interface IndicatorActionEvent {
+  run_id: string;
+  actions: {
+    action: "add" | "remove" | "update" | "clear_all";
+    indicator_type?: string;
+    params?: Record<string, unknown>;
+    indicator_id?: string;
+    color?: string;
+  }[];
+}
+
+export interface JournalActionEvent {
+  run_id: string;
+  actions: {
+    action: "create" | "update";
+    title?: string;
+    body?: string;
+    market?: string;
+    outcome?: "win" | "loss" | "breakeven";
+    mood?: "bullish" | "bearish" | "neutral";
+    entry_id?: string;
+    updates?: Record<string, unknown>;
+  }[];
+}
+
+export interface WatchlistActionEvent {
+  run_id: string;
+  actions: {
+    action: "add" | "remove";
+    symbol: string;
+  }[];
+}
+
 // ─── Tool Event (for UI display) ───
 
 export interface ToolEvent {
   id: string;
   tool_name: string;
-  status: "running" | "success" | "error" | "denied" | "pending_approval";
+  status: "running" | "success" | "error" | "denied" | "timeout" | "pending_approval";
   input?: Record<string, unknown>;
   result?: Record<string, unknown>;
   timestamp: number;
@@ -92,6 +188,48 @@ export interface StreamChatRequest {
   require_approval?: boolean;
   current_page?: string;
   news_headlines?: string[];
+  active_scripts?: string[];
+  user_profile?: {
+    name?: string;
+    experience?: string;
+    tradingStyle?: string;
+    analysisApproach?: string[];
+    tradingGoals?: string[];
+    markets?: string[];
+    // AI memory profile fields (from Convex userMemory)
+    profileSummary?: string;
+    favoriteSymbols?: string[];
+    strengths?: string[];
+    weaknesses?: string[];
+  };
+  active_alerts?: {
+    id: string;
+    type: "price" | "news";
+    symbol: string;
+    condition?: string;
+    targetPrice?: number;
+    keywords?: string[];
+    active: boolean;
+  }[];
+  // ─── Full App Awareness ───
+  portfolio_holdings?: { symbol: string; shares: number; avgCostBasis: number }[];
+  open_positions?: {
+    symbol: string; side: string; size: number;
+    entryPrice: number; stopLoss?: number | null; takeProfit?: number | null;
+    unrealizedPnl?: number;
+  }[];
+  account_state?: { balance: number; equity: number; unrealizedPnl: number };
+  recent_journal?: {
+    date: string; title: string; market?: string;
+    outcome?: string; mood?: string; body?: string;
+  }[];
+  watchlist_symbols?: string[];
+  chart_drawings?: {
+    type: string; id: string; color?: string;
+    price?: number; start?: unknown; end?: unknown;
+  }[];
+  active_indicators?: { type: string; params?: Record<string, unknown>; visible?: boolean }[];
+  app_settings?: { theme?: string; broker?: string; riskLimits?: Record<string, unknown> };
 }
 
 // ─── Hook Return ───
@@ -113,6 +251,22 @@ export interface UseAgentStreamReturn {
   abort: () => void;
   /** Pending approval request (null if none) */
   pendingApproval: ApprovalRequestEvent | null;
+  /** UI action events from agent control_ui tool */
+  uiActions: UIActionEvent[];
+  /** Position action events from agent manage_holdings tool */
+  positionActions: PositionActionEvent[];
+  /** Alert action events from agent manage_alerts tool */
+  alertActions: AlertActionEvent[];
+  /** Drawing action events from agent manage_drawings tool */
+  drawingActions: DrawingActionEvent[];
+  /** Indicator action events from agent manage_indicators tool */
+  indicatorActions: IndicatorActionEvent[];
+  /** Journal action events from agent manage_journal tool */
+  journalActions: JournalActionEvent[];
+  /** Watchlist action events from agent manage_watchlist tool */
+  watchlistActions: WatchlistActionEvent[];
+  /** Live token usage (updates after each API round during streaming) */
+  liveTokenUsage: TokenUsage | null;
 }
 
 const API_BASE = "/api/chat/stream";
@@ -125,6 +279,14 @@ export function useAgentStream(): UseAgentStreamReturn {
   const [error, setError] = useState<string | null>(null);
   const [pendingApproval, setPendingApproval] =
     useState<ApprovalRequestEvent | null>(null);
+  const [uiActions, setUIActions] = useState<UIActionEvent[]>([]);
+  const [positionActions, setPositionActions] = useState<PositionActionEvent[]>([]);
+  const [alertActions, setAlertActions] = useState<AlertActionEvent[]>([]);
+  const [drawingActions, setDrawingActions] = useState<DrawingActionEvent[]>([]);
+  const [indicatorActions, setIndicatorActions] = useState<IndicatorActionEvent[]>([]);
+  const [journalActions, setJournalActions] = useState<JournalActionEvent[]>([]);
+  const [watchlistActions, setWatchlistActions] = useState<WatchlistActionEvent[]>([]);
+  const [liveTokenUsage, setLiveTokenUsage] = useState<TokenUsage | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -144,6 +306,14 @@ export function useAgentStream(): UseAgentStreamReturn {
       setResult(null);
       setError(null);
       setPendingApproval(null);
+      setUIActions([]);
+      setPositionActions([]);
+      setAlertActions([]);
+      setDrawingActions([]);
+      setIndicatorActions([]);
+      setJournalActions([]);
+      setWatchlistActions([]);
+      setLiveTokenUsage(null);
       setIsStreaming(true);
 
       // Create abort controller
@@ -151,6 +321,9 @@ export function useAgentStream(): UseAgentStreamReturn {
       abortControllerRef.current = controller;
 
       let doneEvent: DoneEvent | null = null;
+
+      // 30s timeout for initial connection — cleared once first byte arrives
+      const connectionTimeoutId = setTimeout(() => controller.abort(), 30_000);
 
       try {
         const response = await fetch(API_BASE, {
@@ -166,9 +339,23 @@ export function useAgentStream(): UseAgentStreamReturn {
             require_approval: req.require_approval || false,
             current_page: req.current_page || undefined,
             news_headlines: req.news_headlines || undefined,
+            active_scripts: req.active_scripts || undefined,
+            user_profile: req.user_profile || undefined,
+            active_alerts: req.active_alerts || undefined,
+            portfolio_holdings: req.portfolio_holdings || undefined,
+            open_positions: req.open_positions || undefined,
+            account_state: req.account_state || undefined,
+            recent_journal: req.recent_journal || undefined,
+            watchlist_symbols: req.watchlist_symbols || undefined,
+            chart_drawings: req.chart_drawings || undefined,
+            active_indicators: req.active_indicators || undefined,
+            app_settings: req.app_settings || undefined,
           }),
           signal: controller.signal,
         });
+
+        // First byte received — clear connection timeout
+        clearTimeout(connectionTimeoutId);
 
         if (!response.ok) {
           throw new Error(`Stream failed: ${response.statusText}`);
@@ -223,7 +410,7 @@ export function useAgentStream(): UseAgentStreamReturn {
                   setToolEvents((prev) => [
                     ...prev,
                     {
-                      id: `${start.tool_name}_${Date.now()}`,
+                      id: start.tool_use_id || `${start.tool_name}_${Date.now()}`,
                       tool_name: start.tool_name,
                       status: "running",
                       input: start.tool_input,
@@ -237,7 +424,9 @@ export function useAgentStream(): UseAgentStreamReturn {
                   const res = data as ToolResultEvent;
                   setToolEvents((prev) =>
                     prev.map((te) =>
-                      te.tool_name === res.tool_name && te.status === "running"
+                      // Match by tool_use_id when available, fall back to name+status
+                      (res.tool_use_id && te.id === res.tool_use_id) ||
+                      (!res.tool_use_id && te.tool_name === res.tool_name && te.status === "running")
                         ? { ...te, status: res.status, result: res.result }
                         : te
                     )
@@ -267,6 +456,59 @@ export function useAgentStream(): UseAgentStreamReturn {
                   break;
                 }
 
+                case "ui_action": {
+                  const uiAction = data as UIActionEvent;
+                  setUIActions((prev) => [...prev, uiAction]);
+                  break;
+                }
+
+                case "position_action": {
+                  const posAction = data as PositionActionEvent;
+                  setPositionActions((prev) => [...prev, posAction]);
+                  break;
+                }
+
+                case "alert_action": {
+                  const alertAction = data as AlertActionEvent;
+                  setAlertActions((prev) => [...prev, alertAction]);
+                  break;
+                }
+
+                case "drawing_action": {
+                  const drawingAction = data as DrawingActionEvent;
+                  setDrawingActions((prev) => [...prev, drawingAction]);
+                  break;
+                }
+
+                case "indicator_action": {
+                  const indicatorAction = data as IndicatorActionEvent;
+                  setIndicatorActions((prev) => [...prev, indicatorAction]);
+                  break;
+                }
+
+                case "journal_action": {
+                  const journalAction = data as JournalActionEvent;
+                  setJournalActions((prev) => [...prev, journalAction]);
+                  break;
+                }
+
+                case "watchlist_action": {
+                  const watchlistAction = data as WatchlistActionEvent;
+                  setWatchlistActions((prev) => [...prev, watchlistAction]);
+                  break;
+                }
+
+                case "token_update": {
+                  const tu = data as TokenUsage & { run_id?: string };
+                  setLiveTokenUsage({
+                    total_input_tokens: tu.total_input_tokens,
+                    total_output_tokens: tu.total_output_tokens,
+                    estimated_cost_usd: tu.estimated_cost_usd,
+                    by_model: tu.by_model,
+                  });
+                  break;
+                }
+
                 case "done": {
                   doneEvent = data as DoneEvent;
                   setResult(doneEvent);
@@ -279,6 +521,7 @@ export function useAgentStream(): UseAgentStreamReturn {
           }
         }
       } catch (e) {
+        clearTimeout(connectionTimeoutId);
         if ((e as Error).name !== "AbortError") {
           const errMsg = (e as Error).message || "Stream failed";
           setError(errMsg);
@@ -302,5 +545,13 @@ export function useAgentStream(): UseAgentStreamReturn {
     error,
     abort,
     pendingApproval,
+    uiActions,
+    positionActions,
+    alertActions,
+    drawingActions,
+    indicatorActions,
+    journalActions,
+    watchlistActions,
+    liveTokenUsage,
   };
 }

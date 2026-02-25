@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://127.0.0.1:8000";
 
@@ -14,9 +14,20 @@ interface BackendStrategy {
   has_walk_forward?: boolean;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const res = await fetch(`${FASTAPI_URL}/api/strategies`, { cache: "no-store" });
+    const headers: Record<string, string> = {};
+
+    // Forward Convex auth token to FastAPI
+    const token = request.cookies.get("__convexAuthJWT")?.value;
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    const res = await fetch(`${FASTAPI_URL}/api/strategies`, {
+      cache: "no-store",
+      headers,
+    });
     if (!res.ok) {
       return NextResponse.json({ strategies: [] }, { status: 200 });
     }

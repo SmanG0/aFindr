@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import uuid
 from typing import Any
 
 from data.fetcher import fetch_ohlcv
@@ -19,7 +21,7 @@ from data.finnhub_fetcher import fetch_insider_sentiment, fetch_earnings_calenda
 from data.fred_fetcher import fetch_economic_indicator, fetch_treasury_yields, POPULAR_SERIES
 from data.polymarket_fetcher import search_markets as poly_search, get_trending_markets as poly_trending
 from data.kalshi_fetcher import search_markets as kalshi_search
-from data.bls_fetcher import fetch_bls_indicator, POPULAR_SERIES as BLS_SERIES
+from data.bls_fetcher import fetch_bls_indicator, fetch_bls_multi, list_categories as bls_categories, POPULAR_SERIES as BLS_SERIES, CATEGORY_DESCRIPTIONS as BLS_CATEGORIES
 from engine.backtester import Backtester, BacktestConfig
 from engine.vbt_strategy import VectorBTStrategy
 from engine.vbt_backtester import run_vbt_backtest, run_vbt_sweep, HAS_VBT
@@ -31,13 +33,18 @@ from engine.preset_strategies import PRESET_STRATEGIES
 from engine.chart_patterns import (
     detect_fvg, detect_order_blocks, detect_liquidity_sweeps,
     detect_bos_choch, detect_swing_points_with_labels,
+    detect_killzone_ranges,
     detect_support_resistance, detect_session_levels,
     detect_round_numbers, detect_vwap_bands,
     detect_rsi_divergence, detect_macd_divergence,
     detect_volume_profile, detect_volume_spikes,
 )
 from agent.sandbox import validate_strategy_code, execute_strategy_code
+from agent.resilience import yfinance_breaker, finnhub_breaker, CircuitOpenError
+from engine.chart_scripts.snippet_library import build_chart_script, list_snippets
 from db import trades_repo, backtest_repo
+
+logger = logging.getLogger("afindr.tools")
 
 # ─── Tool Definitions (Anthropic tool_use schema) ───
 
@@ -54,14 +61,14 @@ TOOLS = [
                 },
                 "period": {
                     "type": "string",
-                    "description": "How far back to fetch data",
-                    "enum": ["5d", "60d", "1y", "2y"],
+                    "description": "How far back to fetch data. Short-term: 5d, 1mo, 3mo. Medium: 6mo, 1y, 2y. Long-term research: 5y, 10y, max (all available history).",
+                    "enum": ["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "max"],
                     "default": "1y",
                 },
                 "interval": {
                     "type": "string",
-                    "description": "Candle interval/timeframe",
-                    "enum": ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk"],
+                    "description": "Candle interval. Intraday (1m-1h) limited to shorter periods. Use 1d/1wk/1mo for long-term research.",
+                    "enum": ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"],
                     "default": "1d",
                 },
             },
@@ -435,7 +442,7 @@ TOOLS = [
                         "properties": {
                             "type": {
                                 "type": "string",
-                                "enum": ["session_vlines", "prev_day_levels"],
+                                "enum": ["session_vlines", "prev_day_levels", "killzone_shades"],
                                 "description": "Generator type",
                             },
                             "hour": {"type": "integer", "description": "Hour (0-23) for session_vlines"},
@@ -453,11 +460,159 @@ TOOLS = [
         },
     },
     {
+        "name": "manage_chart_scripts",
+        "description": "List, update, or delete chart scripts on the user's chart. Use this to edit colors/styles, reposition elements, or remove specific drawings. When the user says 'change color to white', 'make it thicker', 'remove the FVGs', use this instead of creating a new script.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "update", "delete"],
+                    "description": "Action to perform: list active scripts, update a script's appearance, or delete a script",
+                },
+                "script_name": {
+                    "type": "string",
+                    "description": "Name or partial name of the script to match (case-insensitive). Required for update and delete.",
+                },
+                "updates": {
+                    "type": "object",
+                    "description": "For action=update: visual properties to change",
+                    "properties": {
+                        "color": {"type": "string", "description": "New CSS color, e.g. '#ffffff'"},
+                        "width": {"type": "number", "description": "New line width in pixels"},
+                        "style": {"type": "string", "enum": ["solid", "dashed", "dotted"], "description": "New line style"},
+                        "opacity": {"type": "number", "description": "New opacity 0-1"},
+                    },
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "control_ui",
+        "description": "Take control of the user's UI to navigate, change chart settings, or prepare the workspace. Use when you need to switch intervals, change symbols, navigate to different pages, toggle panels, or activate drawing tools. The user will see you controlling their screen in real-time with an animated cursor.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "description": "Sequence of UI actions to perform. Executed one at a time with visual animation.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["set_interval", "set_symbol", "set_page", "toggle_panel", "set_drawing_tool", "set_theme", "open_section"],
+                                "description": "The UI action to perform",
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": "The value to set. Intervals: 1m,5m,15m,30m,1h,4h,1d,1wk. Pages: trade,dashboard,portfolio,news,alpha,settings,journal,library. Panels: strategyTester,indicatorSearch,riskMgmt,bottomPanel,alphySidePanel. Drawing tools: crosshair,trendline,hline,vline,ray,arrow,rectangle,channel,fib,measure,text,brush,eraser. Themes: dark-amber,dark-blue,dark-green,dark-red,light. Sections: journal,library,thesis.",
+                            },
+                            "label": {
+                                "type": "string",
+                                "description": "Human-readable description shown to the user, e.g. 'Switching to 1-minute chart'",
+                            },
+                        },
+                        "required": ["action", "value"],
+                    },
+                },
+            },
+            "required": ["actions"],
+        },
+    },
+    {
         "name": "get_trading_summary",
         "description": "Get the user's current trading account summary: open positions, recent closed trades, P&L overview, win rate, and account balance. Use when the user asks 'how am I doing?', 'show my account', 'what are my positions?', or any account status question.",
         "input_schema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    {
+        "name": "manage_holdings",
+        "description": "Add, edit, or remove positions/holdings in the user's portfolio. Use when the user asks to add a stock/crypto/future to their holdings, change position size, set stop loss/take profit, or remove a holding.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "edit", "remove", "remove_all"],
+                    "description": "What to do: add a new holding, edit an existing one, remove one, or remove all",
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Ticker symbol, e.g. 'AAPL', 'BTC-USD', 'NQ=F'",
+                },
+                "side": {
+                    "type": "string",
+                    "enum": ["long", "short"],
+                    "description": "Position direction. Default: long",
+                },
+                "size": {
+                    "type": "number",
+                    "description": "Number of shares/contracts/coins",
+                },
+                "entry_price": {
+                    "type": "number",
+                    "description": "Entry price. If omitted for 'add', current market price is used.",
+                },
+                "stop_loss": {
+                    "type": "number",
+                    "description": "Stop loss price (optional)",
+                },
+                "take_profit": {
+                    "type": "number",
+                    "description": "Take profit price (optional)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "manage_alerts",
+        "description": "Create, toggle, or delete price/news alerts for the user. Use when the user says 'alert me when...', 'set up a price alert', 'notify me if...', 'turn off my alert', or 'delete my alerts'. For price alerts, specify the symbol, condition, and target price. For news alerts, specify the symbol and keywords to watch for.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "toggle", "delete"],
+                    "description": "What to do: create a new alert, toggle an existing one on/off, or delete one",
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["price", "news"],
+                    "description": "Alert type. 'price' for price-based alerts, 'news' for keyword-based news alerts",
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Ticker symbol, e.g. 'AAPL', 'BTC-USD', 'NQ=F'",
+                },
+                "condition": {
+                    "type": "string",
+                    "enum": ["above", "below", "crosses_above", "crosses_below"],
+                    "description": "Price condition for price alerts (required for create with type=price)",
+                },
+                "target_price": {
+                    "type": "number",
+                    "description": "Target price for price alerts (required for create with type=price)",
+                },
+                "keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Keywords to watch for in news alerts (required for create with type=news)",
+                },
+                "alert_id": {
+                    "type": "string",
+                    "description": "Alert ID (required for toggle and delete actions). Use IDs from the active alerts context.",
+                },
+                "active": {
+                    "type": "boolean",
+                    "description": "Set alert active/inactive (required for toggle action)",
+                },
+            },
+            "required": ["action"],
         },
     },
     {
@@ -559,7 +714,7 @@ TOOLS = [
                 "pattern_type": {
                     "type": "string",
                     "description": "Which pattern to detect",
-                    "enum": ["fvg", "order_blocks", "liquidity_sweeps", "bos_choch", "swing_points"],
+                    "enum": ["fvg", "order_blocks", "liquidity_sweeps", "bos_choch", "swing_points", "killzone_ranges"],
                 },
                 "symbol": {
                     "type": "string",
@@ -934,20 +1089,47 @@ TOOLS = [
     {
         "name": "fetch_labor_data",
         "description": (
-            "Fetch US labor market data from the Bureau of Labor Statistics (BLS). "
-            "Provides CPI, unemployment rate, nonfarm payrolls, PPI, average hourly earnings, "
-            "labor force participation rate, and more.\n\n"
-            "Quick shorthands: cpi, core_cpi, unemployment, nonfarm_payrolls, ppi, "
-            "avg_hourly_earnings, labor_force_participation, employment_population.\n\n"
-            "Use when the user asks about jobs, labor market, BLS data, nonfarm payrolls, "
-            "payroll numbers, wage growth, or labor statistics."
+            "Fetch US economic data from the Bureau of Labor Statistics (BLS). "
+            "Covers data FRED does NOT provide: JOLTS (job openings, quits, hires, layoffs), "
+            "Import/Export Price Indexes, Employment Cost Index (ECI), Productivity & Unit Labor Costs, "
+            "sector payrolls, CPI sub-components, U-6 underemployment, and more.\n\n"
+            "CATEGORIES:\n"
+            "• Employment: nonfarm_payrolls, private_payrolls, manufacturing_payrolls, "
+            "construction_payrolls, healthcare_payrolls, tech_payrolls, leisure_payrolls, "
+            "govt_payrolls, avg_weekly_hours\n"
+            "• Labor Force: unemployment, u6_unemployment, labor_force_participation, "
+            "employment_population, long_term_unemployed, part_time_economic, "
+            "median_weeks_unemployed, prime_age_lfpr\n"
+            "• JOLTS (BLS exclusive): job_openings, jolts_hires, jolts_quits, "
+            "jolts_layoffs, jolts_separations\n"
+            "• Inflation: cpi, core_cpi, cpi_food, cpi_energy, cpi_shelter, cpi_medical, "
+            "cpi_transport, cpi_services, ppi, ppi_final_demand\n"
+            "• Trade (BLS exclusive): import_prices, export_prices, import_fuel, import_nonfuel\n"
+            "• Wages (BLS exclusive): avg_hourly_earnings, avg_weekly_earnings, eci_total, "
+            "eci_wages, eci_benefits\n"
+            "• Productivity (BLS exclusive): productivity, unit_labor_costs, real_compensation\n\n"
+            "Use 'compare' mode to fetch multiple series at once (e.g. job_openings + jolts_quits).\n"
+            "Use 'list_categories' to show all available series grouped by category."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "indicator": {
                     "type": "string",
-                    "description": "BLS indicator shorthand (e.g. 'unemployment', 'nonfarm_payrolls', 'cpi') or raw BLS series ID",
+                    "description": (
+                        "BLS indicator shorthand or raw series ID. "
+                        "Use 'list_categories' to see all available series. "
+                        "Examples: 'job_openings', 'u6_unemployment', 'eci_total', 'import_prices', 'productivity'"
+                    ),
+                },
+                "compare": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional: list of shorthands to fetch together for comparison. "
+                        "If provided, 'indicator' is ignored. Max 50 series. "
+                        "Example: ['job_openings', 'jolts_quits', 'jolts_hires']"
+                    ),
                 },
                 "years": {
                     "type": "integer",
@@ -955,7 +1137,249 @@ TOOLS = [
                     "default": 3,
                 },
             },
-            "required": ["indicator"],
+            "required": [],
+        },
+    },
+    # ─── Chart Script Snippet Tools ───
+    {
+        "name": "apply_chart_snippet",
+        "description": (
+            "Apply a pre-built chart overlay from the snippet library. Much faster than "
+            "creating scripts manually. Use for common overlays like session lines, killzones, "
+            "and previous day levels."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "template": {
+                    "type": "string",
+                    "description": (
+                        "Snippet template name. Sessions: ny_open, ny_close, london_open, asian_open, "
+                        "midnight_open, all_sessions. Levels: prev_day_levels, ict_time_framework. "
+                        "Killzones: kz_asian, kz_london, kz_ny_am, kz_ny_pm, kz_all."
+                    ),
+                },
+                "color": {
+                    "type": "string",
+                    "description": "Optional CSS color override, e.g. '#ff0000'",
+                },
+                "style": {
+                    "type": "string",
+                    "description": "Optional line style override",
+                    "enum": ["solid", "dashed", "dotted"],
+                },
+                "visible": {
+                    "type": "boolean",
+                    "description": "Whether the overlay is visible (default true)",
+                    "default": True,
+                },
+            },
+            "required": ["template"],
+        },
+    },
+    {
+        "name": "list_chart_snippets",
+        "description": "List all available pre-built chart overlay snippets with names, categories, and descriptions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    # ─── Phase 2: Read Tools (read from injected context) ───
+    {
+        "name": "read_portfolio",
+        "description": "Read the user's portfolio holdings, open trading positions, and account state (balance, equity, P&L). Use when the user asks about their portfolio, holdings, positions, balance, or account status.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "read_journal",
+        "description": "Read the user's recent trade journal entries. Can filter by symbol, outcome (win/loss), or keyword. Use when the user asks about journal entries, past trades they documented, trading patterns, or review history.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Filter journal entries by ticker symbol mentioned in title or body",
+                },
+                "outcome": {
+                    "type": "string",
+                    "enum": ["win", "loss", "breakeven"],
+                    "description": "Filter by trade outcome",
+                },
+            },
+        },
+    },
+    {
+        "name": "read_watchlist",
+        "description": "Read the user's watchlist symbols. Use when the user asks about their watchlist, tracked symbols, or 'what am I watching?'",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "read_chart_state",
+        "description": "Read current chart state: drawings (horizontal lines, trendlines, etc.), active indicators (RSI, EMA, etc.), current symbol and interval. Use when you need to know what's on the chart before adding/removing elements.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "read_app_settings",
+        "description": "Read the user's app settings: theme, broker, risk limits, trading preferences. Use when the user asks about their settings, or when you need to respect their risk limits for position sizing.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    # ─── Phase 3: Write Tools ───
+    {
+        "name": "manage_drawings",
+        "description": "Add, update, or remove chart drawings (horizontal lines, trendlines, rectangles, etc.). Use when the user says 'draw a line at...', 'remove that trendline', 'clear all drawings'. For complex pattern overlays, use create_chart_script instead.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "update", "delete", "clear_all"],
+                    "description": "What to do: create a new drawing, update an existing one, delete one, or clear all drawings",
+                },
+                "drawing_type": {
+                    "type": "string",
+                    "enum": ["hline", "trendline", "ray", "rectangle", "channel", "fib"],
+                    "description": "Type of drawing to create (required for 'create' action)",
+                },
+                "price": {
+                    "type": "number",
+                    "description": "Price level for horizontal lines (hline)",
+                },
+                "start": {
+                    "type": "object",
+                    "description": "Start point for trendlines/rays: {time: unix_timestamp, price: number}",
+                    "properties": {
+                        "time": {"type": "number"},
+                        "price": {"type": "number"},
+                    },
+                },
+                "end": {
+                    "type": "object",
+                    "description": "End point for trendlines: {time: unix_timestamp, price: number}",
+                    "properties": {
+                        "time": {"type": "number"},
+                        "price": {"type": "number"},
+                    },
+                },
+                "color": {
+                    "type": "string",
+                    "description": "Color hex code, e.g. '#ff0000' for red, '#089981' for green",
+                },
+                "style": {
+                    "type": "string",
+                    "enum": ["solid", "dashed", "dotted"],
+                    "description": "Line style (default: solid)",
+                },
+                "drawing_id": {
+                    "type": "string",
+                    "description": "Drawing ID (required for update and delete actions)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "manage_indicators",
+        "description": "Add, remove, or update technical indicators on the chart. Use when the user asks to add RSI, remove MACD, change EMA period, etc. This triggers the actual indicator overlay — don't also emit [INDICATOR:...] tags.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "remove", "update", "clear_all"],
+                    "description": "What to do: add a new indicator, remove one, update params, or clear all",
+                },
+                "indicator_type": {
+                    "type": "string",
+                    "enum": ["sma", "ema", "rsi", "macd", "bb", "atr", "stoch", "vwap", "supertrend"],
+                    "description": "Indicator type (required for add/remove/update)",
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Indicator parameters, e.g. {period: 14} for RSI, {fast: 12, slow: 26, signal: 9} for MACD",
+                },
+                "indicator_id": {
+                    "type": "string",
+                    "description": "Indicator ID (required for update/remove of a specific instance)",
+                },
+                "color": {
+                    "type": "string",
+                    "description": "Custom color hex code for the indicator line",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "manage_journal",
+        "description": "Create or update trade journal entries. Use when the user says 'journal this trade', 'write down that I shorted NQ', 'update my journal entry', or 'log this trade'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "update"],
+                    "description": "Create a new journal entry or update an existing one",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Entry title, e.g. 'NQ Short at 25100 — CPI Play'",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Entry body text (trade notes, thesis, analysis)",
+                },
+                "market": {
+                    "type": "string",
+                    "description": "Market/symbol this entry is about, e.g. 'NQ', 'AAPL'",
+                },
+                "outcome": {
+                    "type": "string",
+                    "enum": ["win", "loss", "breakeven"],
+                    "description": "Trade outcome (if known)",
+                },
+                "mood": {
+                    "type": "string",
+                    "enum": ["bullish", "bearish", "neutral"],
+                    "description": "Market mood/bias at time of trade",
+                },
+                "entry_id": {
+                    "type": "string",
+                    "description": "Journal entry ID (required for update action)",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "manage_watchlist",
+        "description": "Add or remove symbols from the user's watchlist. Use when the user says 'add TSLA to my watchlist', 'watch AAPL', 'remove BTC from watchlist', 'stop watching NVDA'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["add", "remove"],
+                    "description": "Add or remove a symbol from the watchlist",
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Ticker symbol, e.g. 'AAPL', 'TSLA', 'BTC-USD'",
+                },
+            },
+            "required": ["action", "symbol"],
         },
     },
 ]
@@ -969,9 +1393,13 @@ async def handle_fetch_market_data(args: dict) -> str:
     period = args.get("period", "1y")
     interval = args.get("interval", "1d")
 
-    df = await fetch_ohlcv(symbol, period, interval)
-    # Return last 20 candles as summary
-    recent = df.tail(20)
+    try:
+        df = await yfinance_breaker.call(lambda: fetch_ohlcv(symbol, period, interval))
+    except CircuitOpenError as e:
+        return json.dumps({"error": f"Market data provider temporarily unavailable: {e}"})
+
+    # Return last 30 candles as detail
+    recent = df.tail(30)
     candles = []
     for ts, row in recent.iterrows():
         candles.append({
@@ -983,14 +1411,47 @@ async def handle_fetch_market_data(args: dict) -> str:
             "volume": int(row["volume"]),
         })
 
-    return json.dumps({
+    result: dict = {
         "symbol": symbol,
         "period": period,
         "interval": interval,
         "total_candles": len(df),
         "recent_candles": candles,
         "latest_close": candles[-1]["close"] if candles else None,
-    })
+    }
+
+    # For long-term periods, add summary stats so Claude can do research
+    if period in ("2y", "5y", "10y", "max") and len(df) > 50:
+        closes = df["close"].dropna()
+        result["summary"] = {
+            "first_date": str(df.index[0]),
+            "last_date": str(df.index[-1]),
+            "first_close": round(float(closes.iloc[0]), 2),
+            "last_close": round(float(closes.iloc[-1]), 2),
+            "total_return_pct": round(float((closes.iloc[-1] / closes.iloc[0] - 1) * 100), 2),
+            "all_time_high": round(float(df["high"].max()), 2),
+            "all_time_low": round(float(df["low"].min()), 2),
+            "avg_volume": int(df["volume"].mean()) if "volume" in df else None,
+        }
+        # Yearly returns for long-term view
+        try:
+            yearly = closes.resample("YE").last().pct_change().dropna()
+            result["yearly_returns"] = {
+                str(idx.year): round(float(val * 100), 2)
+                for idx, val in yearly.items()
+            }
+        except Exception:
+            pass
+        # Drawdown from ATH
+        try:
+            cummax = closes.cummax()
+            drawdown = (closes - cummax) / cummax
+            result["summary"]["max_drawdown_pct"] = round(float(drawdown.min() * 100), 2)
+            result["summary"]["current_drawdown_pct"] = round(float(drawdown.iloc[-1] * 100), 2)
+        except Exception:
+            pass
+
+    return json.dumps(result)
 
 
 async def handle_fetch_news(args: dict) -> str:
@@ -1020,7 +1481,14 @@ async def handle_get_stock_info(args: dict) -> str:
     """Handle get_stock_info tool call."""
     ticker = args["ticker"]
 
-    quote = fetch_stock_quote(ticker)
+    async def _fetch():
+        return fetch_stock_quote(ticker)
+
+    try:
+        quote = await yfinance_breaker.call(_fetch)
+    except CircuitOpenError as e:
+        return json.dumps({"error": f"Stock data provider temporarily unavailable: {e}"})
+
     if not quote:
         return json.dumps({"error": f"Could not fetch data for {ticker}"})
 
@@ -1134,7 +1602,46 @@ async def handle_run_backtest(args: dict, strategy_generator, vbt_strategy_gener
     except Exception:
         pass
 
-    return json.dumps({
+    # Generate trade visualization chart script (entry/exit markers)
+    trade_viz_script = None
+    if result.trades:
+        markers = []
+        for t in result.trades:
+            is_long = t.get("side") == "long"
+            is_win = t.get("pnl", 0) > 0
+            marker_color = "#089981" if is_win else "#f23645"
+            entry_price = t.get("entry_price", 0)
+            exit_price = t.get("exit_price", 0)
+            # Entry marker
+            markers.append({
+                "type": "marker",
+                "id": f"entry_{t.get('entry_time', 0)}_{t.get('id', 0)}",
+                "time": t.get("entry_time", 0),
+                "position": "belowBar" if is_long else "aboveBar",
+                "shape": "arrowUp" if is_long else "arrowDown",
+                "color": marker_color,
+                "text": f"{'B' if is_long else 'S'} {entry_price:.0f}",
+            })
+            # Exit marker
+            if t.get("exit_time"):
+                markers.append({
+                    "type": "marker",
+                    "id": f"exit_{t.get('exit_time', 0)}_{t.get('id', 0)}",
+                    "time": t.get("exit_time", 0),
+                    "position": "aboveBar" if is_long else "belowBar",
+                    "shape": "arrowDown" if is_long else "arrowUp",
+                    "color": marker_color,
+                    "text": f"{'Exit' if is_win else 'SL'} {exit_price:.0f}",
+                })
+        trade_viz_script = {
+            "id": f"trades_{uuid.uuid4().hex[:8]}",
+            "name": f"Backtest Trades — {symbol}",
+            "visible": True,
+            "elements": markers,
+            "generators": [],
+        }
+
+    response_data = {
         "strategy": {
             "name": strategy_result.get("name"),
             "description": strategy_result.get("description"),
@@ -1148,7 +1655,11 @@ async def handle_run_backtest(args: dict, strategy_generator, vbt_strategy_gener
         "monte_carlo": monte_carlo_data,
         "saved_filename": saved_filename,
         "backtest_run_id": backtest_run_id,
-    })
+    }
+    if trade_viz_script:
+        response_data["chart_script"] = trade_viz_script
+
+    return json.dumps(response_data)
 
 
 async def handle_run_parameter_sweep(args: dict, vbt_strategy_generator) -> str:
@@ -1457,7 +1968,7 @@ async def handle_create_chart_script(args: dict) -> str:
     validated_generators = []
     for gen in generators:
         gen_type = gen.get("type")
-        if gen_type not in ("session_vlines", "prev_day_levels"):
+        if gen_type not in ("session_vlines", "prev_day_levels", "killzone_shades"):
             continue
         validated_generators.append(gen)
 
@@ -1472,6 +1983,81 @@ async def handle_create_chart_script(args: dict) -> str:
     return json.dumps({
         "chart_script": chart_script,
         "description": description,
+    })
+
+
+async def handle_manage_chart_scripts(args: dict) -> str:
+    """Handle manage_chart_scripts tool call.
+
+    Returns control tags that the frontend parses to update/delete scripts.
+    For 'list', returns the active scripts context from the system prompt.
+    """
+    action = args.get("action", "list")
+    script_name = args.get("script_name", "")
+    updates = args.get("updates", {})
+
+    if action == "list":
+        # The agent already has active scripts in its system prompt context.
+        # This tool just confirms the list for the user.
+        return json.dumps({
+            "action": "list",
+            "message": "Check the 'Active Scripts on Chart' section in your context for the current list of scripts.",
+        })
+
+    elif action == "update":
+        if not script_name:
+            return json.dumps({"error": "script_name is required for update action"})
+        if not updates:
+            return json.dumps({"error": "updates object is required for update action"})
+        # Build the control tag for the frontend
+        update_parts = ",".join(f"{k}={v}" for k, v in updates.items())
+        tag = f"[SCRIPT_UPDATE:{script_name}:{update_parts}]"
+        return json.dumps({
+            "action": "update",
+            "script_name": script_name,
+            "updates": updates,
+            "control_tag": tag,
+            "message": f"Updated script matching '{script_name}': {update_parts}. {tag}",
+        })
+
+    elif action == "delete":
+        if not script_name:
+            return json.dumps({"error": "script_name is required for delete action"})
+        tag = f"[SCRIPT_DELETE:{script_name}]"
+        return json.dumps({
+            "action": "delete",
+            "script_name": script_name,
+            "control_tag": tag,
+            "message": f"Removed script matching '{script_name}'. {tag}",
+        })
+
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
+async def handle_control_ui(args: dict) -> str:
+    """Handle control_ui tool call.
+
+    Returns the actions as structured data. The agent_runner will
+    emit these as ui_action SSE events for the frontend to animate.
+    """
+    actions = args.get("actions", [])
+    if not actions:
+        return json.dumps({"error": "No actions provided"})
+
+    valid_actions = []
+    for a in actions:
+        action_type = a.get("action")
+        value = a.get("value", "")
+        label = a.get("label", "")
+        if action_type in ("set_interval", "set_symbol", "set_page", "toggle_panel", "set_drawing_tool", "set_theme", "open_section"):
+            valid_actions.append({"action": action_type, "value": value, "label": label})
+
+    if not valid_actions:
+        return json.dumps({"error": "No valid actions"})
+
+    return json.dumps({
+        "ui_actions": valid_actions,
+        "message": f"Executing {len(valid_actions)} UI action(s)",
     })
 
 
@@ -1520,6 +2106,185 @@ async def handle_query_trade_history(args: dict) -> str:
         })
     except Exception as e:
         return json.dumps({"error": f"Failed to query trades: {str(e)}"})
+
+
+async def handle_manage_holdings(args: dict) -> str:
+    """Handle manage_holdings tool call.
+
+    Returns position_actions that the frontend parses to add/edit/remove
+    holdings via the tradingEngine. Similar pattern to control_ui → ui_actions.
+    """
+    action = args.get("action")
+    if action not in ("add", "edit", "remove", "remove_all"):
+        return json.dumps({"error": f"Invalid action: {action}. Must be add, edit, remove, or remove_all."})
+
+    symbol = args.get("symbol", "").upper()
+    side = args.get("side", "long")
+    size = args.get("size")
+    entry_price = args.get("entry_price")
+    stop_loss = args.get("stop_loss")
+    take_profit = args.get("take_profit")
+
+    if action == "add":
+        if not symbol:
+            return json.dumps({"error": "symbol is required for add action"})
+        if size is None or size <= 0:
+            return json.dumps({"error": "size must be a positive number for add action"})
+
+        position_action = {
+            "action": "add",
+            "symbol": symbol,
+            "side": side,
+            "size": size,
+            "entry_price": entry_price,  # None means use current market price
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+        }
+        return json.dumps({
+            "position_actions": [position_action],
+            "message": f"Adding {size} {symbol} ({side}) to holdings",
+        })
+
+    elif action == "edit":
+        if not symbol:
+            return json.dumps({"error": "symbol is required for edit action"})
+
+        updates = {}
+        if size is not None:
+            updates["size"] = size
+        if stop_loss is not None:
+            updates["stop_loss"] = stop_loss
+        if take_profit is not None:
+            updates["take_profit"] = take_profit
+        if side:
+            updates["side"] = side
+
+        if not updates:
+            return json.dumps({"error": "No updates provided. Specify size, stop_loss, or take_profit to edit."})
+
+        position_action = {
+            "action": "edit",
+            "symbol": symbol,
+            "updates": updates,
+        }
+        return json.dumps({
+            "position_actions": [position_action],
+            "message": f"Editing {symbol} position: {updates}",
+        })
+
+    elif action == "remove":
+        if not symbol:
+            return json.dumps({"error": "symbol is required for remove action"})
+
+        position_action = {
+            "action": "remove",
+            "symbol": symbol,
+        }
+        return json.dumps({
+            "position_actions": [position_action],
+            "message": f"Removing {symbol} from holdings",
+        })
+
+    elif action == "remove_all":
+        position_action = {
+            "action": "remove_all",
+        }
+        return json.dumps({
+            "position_actions": [position_action],
+            "message": "Removing all holdings",
+        })
+
+    return json.dumps({"error": "Unknown action"})
+
+
+async def handle_manage_alerts(args: dict) -> str:
+    """Handle manage_alerts tool call.
+
+    Returns alert_actions that the frontend parses to create/toggle/delete
+    alerts via Convex mutations. Same pattern as manage_holdings → position_actions.
+    """
+    action = args.get("action")
+    if action not in ("create", "toggle", "delete"):
+        return json.dumps({"error": f"Invalid action: {action}. Must be create, toggle, or delete."})
+
+    if action == "create":
+        alert_type = args.get("type")
+        if alert_type not in ("price", "news"):
+            return json.dumps({"error": "type is required for create action. Must be 'price' or 'news'."})
+
+        symbol = args.get("symbol", "").upper()
+        if not symbol:
+            return json.dumps({"error": "symbol is required for create action"})
+
+        if alert_type == "price":
+            condition = args.get("condition")
+            target_price = args.get("target_price")
+            if not condition:
+                return json.dumps({"error": "condition is required for price alerts (above, below, crosses_above, crosses_below)"})
+            if target_price is None:
+                return json.dumps({"error": "target_price is required for price alerts"})
+
+            alert_action = {
+                "action": "create",
+                "type": "price",
+                "symbol": symbol,
+                "condition": condition,
+                "targetPrice": target_price,
+            }
+            return json.dumps({
+                "alert_actions": [alert_action],
+                "message": f"Creating price alert: {symbol} {condition} ${target_price}",
+            })
+
+        else:  # news
+            keywords = args.get("keywords", [])
+            if not keywords:
+                return json.dumps({"error": "keywords array is required for news alerts"})
+
+            alert_action = {
+                "action": "create",
+                "type": "news",
+                "symbol": symbol,
+                "keywords": keywords,
+            }
+            return json.dumps({
+                "alert_actions": [alert_action],
+                "message": f"Creating news alert for {symbol} with keywords: {', '.join(keywords)}",
+            })
+
+    elif action == "toggle":
+        alert_id = args.get("alert_id")
+        active = args.get("active")
+        if not alert_id:
+            return json.dumps({"error": "alert_id is required for toggle action"})
+        if active is None:
+            return json.dumps({"error": "active (true/false) is required for toggle action"})
+
+        alert_action = {
+            "action": "toggle",
+            "alertId": alert_id,
+            "active": active,
+        }
+        return json.dumps({
+            "alert_actions": [alert_action],
+            "message": f"{'Enabling' if active else 'Disabling'} alert {alert_id}",
+        })
+
+    elif action == "delete":
+        alert_id = args.get("alert_id")
+        if not alert_id:
+            return json.dumps({"error": "alert_id is required for delete action"})
+
+        alert_action = {
+            "action": "delete",
+            "alertId": alert_id,
+        }
+        return json.dumps({
+            "alert_actions": [alert_action],
+            "message": f"Deleting alert {alert_id}",
+        })
+
+    return json.dumps({"error": "Unknown action"})
 
 
 async def handle_get_backtest_history(args: dict) -> str:
@@ -1610,7 +2375,44 @@ async def handle_run_preset_strategy(args: dict) -> str:
     except Exception:
         pass
 
-    return json.dumps({
+    # Generate trade visualization chart script
+    trade_viz_script = None
+    if result.trades:
+        markers = []
+        for t in result.trades:
+            is_long = t.get("side") == "long"
+            is_win = t.get("pnl", 0) > 0
+            marker_color = "#089981" if is_win else "#f23645"
+            entry_price = t.get("entry_price", 0)
+            exit_price = t.get("exit_price", 0)
+            markers.append({
+                "type": "marker",
+                "id": f"entry_{t.get('entry_time', 0)}_{t.get('id', 0)}",
+                "time": t.get("entry_time", 0),
+                "position": "belowBar" if is_long else "aboveBar",
+                "shape": "arrowUp" if is_long else "arrowDown",
+                "color": marker_color,
+                "text": f"{'B' if is_long else 'S'} {entry_price:.0f}",
+            })
+            if t.get("exit_time"):
+                markers.append({
+                    "type": "marker",
+                    "id": f"exit_{t.get('exit_time', 0)}_{t.get('id', 0)}",
+                    "time": t.get("exit_time", 0),
+                    "position": "aboveBar" if is_long else "belowBar",
+                    "shape": "arrowDown" if is_long else "arrowUp",
+                    "color": marker_color,
+                    "text": f"{'Exit' if is_win else 'SL'} {exit_price:.0f}",
+                })
+        trade_viz_script = {
+            "id": f"trades_{uuid.uuid4().hex[:8]}",
+            "name": f"Backtest Trades — {symbol}",
+            "visible": True,
+            "elements": markers,
+            "generators": [],
+        }
+
+    response_data = {
         "preset_id": preset_id,
         "preset_name": preset["name"],
         "strategy": {
@@ -1624,7 +2426,39 @@ async def handle_run_preset_strategy(args: dict) -> str:
         "equity_curve": result.equity_curve,
         "monte_carlo": monte_carlo_data,
         "backtest_run_id": backtest_run_id,
-    })
+    }
+    if trade_viz_script:
+        response_data["chart_script"] = trade_viz_script
+
+    return json.dumps(response_data)
+
+
+# ─── Chart Snippet Handlers ───
+
+async def handle_apply_chart_snippet(args: dict) -> str:
+    """Handle apply_chart_snippet tool call.
+
+    Looks up a pre-built snippet template and returns a ready-to-render ChartScript.
+    """
+    template = args.get("template", "")
+    color = args.get("color")
+    style = args.get("style")
+    visible = args.get("visible", True)
+
+    chart_script = build_chart_script(template, color=color, style=style, visible=visible)
+    if chart_script is None:
+        available = [s["template"] for s in list_snippets()]
+        return json.dumps({
+            "error": f"Unknown snippet template: '{template}'. Available: {available}",
+        })
+
+    return json.dumps({"chart_script": chart_script})
+
+
+async def handle_list_chart_snippets(args: dict) -> str:
+    """Handle list_chart_snippets tool call — returns catalog metadata."""
+    snippets = list_snippets()
+    return json.dumps({"snippets": snippets, "count": len(snippets)})
 
 
 # ─── Chart Pattern Handlers ───
@@ -1633,8 +2467,9 @@ async def handle_run_preset_strategy(args: dict) -> str:
 _CHART_PATTERN_DISPATCH = {
     "fvg": lambda df, args: detect_fvg(
         df,
-        min_gap_atr_ratio=args.get("min_gap_atr_ratio", 0.5),
+        min_gap_atr_ratio=args.get("min_gap_atr_ratio", 0.3),
         show_filled=args.get("show_filled", True),
+        max_age_bars=args.get("max_age_bars", 500),
         swing_lookback=args.get("swing_lookback", 5),
     ),
     "order_blocks": lambda df, args: detect_order_blocks(
@@ -1654,6 +2489,10 @@ _CHART_PATTERN_DISPATCH = {
         df,
         lookback=args.get("swing_lookback", 5),
         lookforward=args.get("swing_lookback", 5),
+    ),
+    "killzone_ranges": lambda df, args: detect_killzone_ranges(
+        df,
+        killzones=args.get("killzones"),
     ),
 }
 
@@ -1704,6 +2543,7 @@ _PATTERN_NAMES = {
     "liquidity_sweeps": "Liquidity Sweeps",
     "bos_choch": "BOS / CHoCH",
     "swing_points": "Swing Points",
+    "killzone_ranges": "Killzone Ranges",
     "support_resistance": "Support & Resistance",
     "session_levels": "Session Levels",
     "round_numbers": "Round Numbers",
@@ -1725,7 +2565,7 @@ async def _run_pattern_detection(args: dict, dispatch: dict, type_key: str) -> s
 
     symbol = args.get("symbol", "NQ=F")
     period = args.get("period", "60d")
-    interval = args.get("interval", "15m")
+    interval = args.get("interval", "5m")
 
     try:
         df = await fetch_ohlcv(symbol, period, interval)
@@ -1797,10 +2637,15 @@ async def handle_fetch_insider_activity(args: dict) -> str:
     except Exception as e:
         result["edgar"] = {"error": str(e)}
 
-    # Finnhub sentiment (optional, needs key)
+    # Finnhub sentiment (optional, needs key — wrapped with circuit breaker)
+    async def _fetch_sentiment():
+        return fetch_insider_sentiment(ticker)
+
     try:
-        sentiment = fetch_insider_sentiment(ticker)
+        sentiment = await finnhub_breaker.call(_fetch_sentiment)
         result["sentiment"] = sentiment
+    except CircuitOpenError:
+        result["sentiment"] = {"error": "Finnhub temporarily unavailable"}
     except Exception:
         result["sentiment"] = {"error": "Finnhub not available"}
 
@@ -1854,11 +2699,16 @@ async def handle_fetch_earnings_calendar(args: dict) -> str:
     """
     ticker = args["ticker"]
 
-    # Try Finnhub first
+    # Try Finnhub first (with circuit breaker)
+    async def _fetch_earnings():
+        return fetch_earnings_calendar(ticker)
+
     try:
-        result = fetch_earnings_calendar(ticker)
+        result = await finnhub_breaker.call(_fetch_earnings)
         if result.get("earnings") and not result.get("error"):
             return json.dumps(result)
+    except CircuitOpenError:
+        logger.info("Finnhub circuit open, falling back to yfinance for earnings")
     except Exception:
         pass
 
@@ -1879,11 +2729,16 @@ async def handle_fetch_company_news_feed(args: dict) -> str:
     ticker = args["ticker"]
     days = args.get("days", 7)
 
-    # Try Finnhub first
+    # Try Finnhub first (with circuit breaker)
+    async def _fetch_news():
+        return fetch_company_news(ticker, days=days)
+
     try:
-        result = fetch_company_news(ticker, days=days)
+        result = await finnhub_breaker.call(_fetch_news)
         if result.get("news") and not result.get("error"):
             return json.dumps(result)
+    except CircuitOpenError:
+        logger.info("Finnhub circuit open, falling back to yfinance for company news")
     except Exception:
         pass
 
@@ -1951,12 +2806,8 @@ async def handle_query_prediction_markets(args: dict) -> str:
     except Exception:
         pass
 
-    # If no results from search, try trending
-    if not polymarket_results:
-        try:
-            polymarket_results = poly_trending(limit=limit)
-        except Exception:
-            pass
+    # Do NOT fall back to trending — that returns unrelated results.
+    # Only return markets that actually match the query.
 
     markets = []
     for m in polymarket_results:
@@ -1974,15 +2825,333 @@ async def handle_query_prediction_markets(args: dict) -> str:
 
 
 async def handle_fetch_labor_data(args: dict) -> str:
-    """Handle fetch_labor_data — fetches BLS labor statistics."""
-    indicator = args["indicator"]
+    """Handle fetch_labor_data — fetches BLS economic data."""
     years = min(args.get("years", 3), 20)
+    compare = args.get("compare")
+    indicator = args.get("indicator", "").strip()
 
     try:
+        # List categories mode
+        if indicator == "list_categories" and not compare:
+            cats = bls_categories()
+            return json.dumps({"categories": cats})
+
+        # Multi-series comparison mode
+        if compare and isinstance(compare, list) and len(compare) > 0:
+            result = fetch_bls_multi(compare, years=years)
+            return json.dumps(result)
+
+        # Single indicator mode
+        if not indicator:
+            return json.dumps({"error": "Provide 'indicator' (shorthand or series ID) or 'compare' (list of shorthands). Use indicator='list_categories' to see all available."})
+
         result = fetch_bls_indicator(indicator, years=years)
         return json.dumps(result)
     except Exception as e:
-        return json.dumps({"error": f"BLS data fetch failed for {indicator}: {str(e)}"})
+        return json.dumps({"error": f"BLS data fetch failed: {str(e)}"})
+
+
+# ─── Phase 2: Read Tool Handlers (read from injected context) ───
+
+async def handle_read_portfolio(args: dict) -> str:
+    """Return portfolio holdings, open positions, and account state from injected context."""
+    from agent.agent_runner import get_app_context
+    ctx = get_app_context()
+    return json.dumps({
+        "holdings": ctx.get("portfolio_holdings") or [],
+        "positions": ctx.get("open_positions") or [],
+        "account": ctx.get("account_state") or {},
+        "holdings_count": len(ctx.get("portfolio_holdings") or []),
+        "positions_count": len(ctx.get("open_positions") or []),
+    })
+
+
+async def handle_read_journal(args: dict) -> str:
+    """Return recent journal entries from injected context, with optional filters."""
+    from agent.agent_runner import get_app_context
+    ctx = get_app_context()
+    entries = ctx.get("recent_journal") or []
+
+    # Apply filters
+    symbol_filter = args.get("symbol", "").upper()
+    outcome_filter = args.get("outcome", "")
+
+    if symbol_filter:
+        entries = [e for e in entries if symbol_filter in (e.get("title", "") + " " + e.get("body", "") + " " + e.get("market", "")).upper()]
+    if outcome_filter:
+        entries = [e for e in entries if e.get("outcome") == outcome_filter]
+
+    # Compute summary
+    wins = sum(1 for e in entries if e.get("outcome") == "win")
+    losses = sum(1 for e in entries if e.get("outcome") == "loss")
+
+    return json.dumps({
+        "entries": entries,
+        "count": len(entries),
+        "summary": {"wins": wins, "losses": losses, "breakeven": len(entries) - wins - losses},
+    })
+
+
+async def handle_read_watchlist(args: dict) -> str:
+    """Return watchlist symbols from injected context."""
+    from agent.agent_runner import get_app_context
+    ctx = get_app_context()
+    symbols = ctx.get("watchlist_symbols") or []
+    return json.dumps({
+        "symbols": symbols,
+        "count": len(symbols),
+    })
+
+
+async def handle_read_chart_state(args: dict) -> str:
+    """Return current chart drawings, indicators, symbol, and interval from injected context."""
+    from agent.agent_runner import get_app_context
+    ctx = get_app_context()
+    return json.dumps({
+        "drawings": ctx.get("chart_drawings") or [],
+        "indicators": ctx.get("active_indicators") or [],
+        "symbol": ctx.get("symbol", ""),
+        "interval": ctx.get("interval", ""),
+        "drawings_count": len(ctx.get("chart_drawings") or []),
+        "indicators_count": len(ctx.get("active_indicators") or []),
+    })
+
+
+async def handle_read_app_settings(args: dict) -> str:
+    """Return app settings from injected context."""
+    from agent.agent_runner import get_app_context
+    ctx = get_app_context()
+    settings = ctx.get("app_settings") or {}
+    return json.dumps({
+        "theme": settings.get("theme", ""),
+        "broker": settings.get("broker", ""),
+        "risk_limits": settings.get("riskLimits") or settings.get("risk") or {},
+    })
+
+
+# ─── Phase 3: Write Tool Handlers ───
+
+async def handle_manage_drawings(args: dict) -> str:
+    """Handle manage_drawings tool call.
+
+    Returns drawing_actions that the frontend parses to add/update/remove
+    drawings via the useDrawings hook.
+    """
+    action = args.get("action")
+    if action not in ("create", "update", "delete", "clear_all"):
+        return json.dumps({"error": f"Invalid action: {action}. Must be create, update, delete, or clear_all."})
+
+    if action == "create":
+        drawing_type = args.get("drawing_type")
+        if not drawing_type:
+            return json.dumps({"error": "drawing_type is required for create action"})
+
+        drawing_action = {
+            "action": "create",
+            "drawing_type": drawing_type,
+            "price": args.get("price"),
+            "start": args.get("start"),
+            "end": args.get("end"),
+            "color": args.get("color", "#f59e0b"),
+            "style": args.get("style", "solid"),
+        }
+        return json.dumps({
+            "drawing_actions": [drawing_action],
+            "message": f"Creating {drawing_type} drawing",
+        })
+
+    elif action == "update":
+        drawing_id = args.get("drawing_id")
+        if not drawing_id:
+            return json.dumps({"error": "drawing_id is required for update action"})
+
+        updates = {}
+        if args.get("color"):
+            updates["color"] = args["color"]
+        if args.get("style"):
+            updates["style"] = args["style"]
+        if args.get("price") is not None:
+            updates["price"] = args["price"]
+
+        drawing_action = {
+            "action": "update",
+            "drawing_id": drawing_id,
+            "updates": updates,
+        }
+        return json.dumps({
+            "drawing_actions": [drawing_action],
+            "message": f"Updating drawing {drawing_id}",
+        })
+
+    elif action == "delete":
+        drawing_id = args.get("drawing_id")
+        if not drawing_id:
+            return json.dumps({"error": "drawing_id is required for delete action"})
+
+        drawing_action = {
+            "action": "delete",
+            "drawing_id": drawing_id,
+        }
+        return json.dumps({
+            "drawing_actions": [drawing_action],
+            "message": f"Deleting drawing {drawing_id}",
+        })
+
+    elif action == "clear_all":
+        return json.dumps({
+            "drawing_actions": [{"action": "clear_all"}],
+            "message": "Clearing all drawings",
+        })
+
+    return json.dumps({"error": "Unknown action"})
+
+
+async def handle_manage_indicators(args: dict) -> str:
+    """Handle manage_indicators tool call.
+
+    Returns indicator_actions that the frontend parses to add/remove/update
+    indicators on the chart.
+    """
+    action = args.get("action")
+    if action not in ("add", "remove", "update", "clear_all"):
+        return json.dumps({"error": f"Invalid action: {action}. Must be add, remove, update, or clear_all."})
+
+    if action == "add":
+        indicator_type = args.get("indicator_type")
+        if not indicator_type:
+            return json.dumps({"error": "indicator_type is required for add action"})
+
+        indicator_action = {
+            "action": "add",
+            "indicator_type": indicator_type,
+            "params": args.get("params", {}),
+            "color": args.get("color"),
+        }
+        return json.dumps({
+            "indicator_actions": [indicator_action],
+            "message": f"Adding {indicator_type} indicator",
+        })
+
+    elif action == "remove":
+        indicator_type = args.get("indicator_type")
+        indicator_id = args.get("indicator_id")
+        if not indicator_type and not indicator_id:
+            return json.dumps({"error": "indicator_type or indicator_id is required for remove action"})
+
+        indicator_action = {
+            "action": "remove",
+            "indicator_type": indicator_type,
+            "indicator_id": indicator_id,
+        }
+        return json.dumps({
+            "indicator_actions": [indicator_action],
+            "message": f"Removing {indicator_type or indicator_id} indicator",
+        })
+
+    elif action == "update":
+        indicator_type = args.get("indicator_type")
+        indicator_id = args.get("indicator_id")
+        if not indicator_type and not indicator_id:
+            return json.dumps({"error": "indicator_type or indicator_id is required for update action"})
+
+        indicator_action = {
+            "action": "update",
+            "indicator_type": indicator_type,
+            "indicator_id": indicator_id,
+            "params": args.get("params", {}),
+            "color": args.get("color"),
+        }
+        return json.dumps({
+            "indicator_actions": [indicator_action],
+            "message": f"Updating {indicator_type or indicator_id} indicator",
+        })
+
+    elif action == "clear_all":
+        return json.dumps({
+            "indicator_actions": [{"action": "clear_all"}],
+            "message": "Clearing all indicators",
+        })
+
+    return json.dumps({"error": "Unknown action"})
+
+
+async def handle_manage_journal(args: dict) -> str:
+    """Handle manage_journal tool call.
+
+    Returns journal_actions that the frontend parses to create/update
+    journal entries via Convex mutations.
+    """
+    action = args.get("action")
+    if action not in ("create", "update"):
+        return json.dumps({"error": f"Invalid action: {action}. Must be create or update."})
+
+    if action == "create":
+        title = args.get("title", "")
+        body = args.get("body", "")
+        if not title and not body:
+            return json.dumps({"error": "At least title or body is required for create action"})
+
+        journal_action = {
+            "action": "create",
+            "title": title,
+            "body": body,
+            "market": args.get("market", ""),
+            "outcome": args.get("outcome"),
+            "mood": args.get("mood"),
+        }
+        return json.dumps({
+            "journal_actions": [journal_action],
+            "message": f"Creating journal entry: {title}",
+        })
+
+    elif action == "update":
+        entry_id = args.get("entry_id")
+        if not entry_id:
+            return json.dumps({"error": "entry_id is required for update action"})
+
+        updates = {}
+        for field in ("title", "body", "market", "outcome", "mood"):
+            if args.get(field) is not None:
+                updates[field] = args[field]
+
+        if not updates:
+            return json.dumps({"error": "No updates provided. Specify title, body, market, outcome, or mood."})
+
+        journal_action = {
+            "action": "update",
+            "entry_id": entry_id,
+            "updates": updates,
+        }
+        return json.dumps({
+            "journal_actions": [journal_action],
+            "message": f"Updating journal entry {entry_id}",
+        })
+
+    return json.dumps({"error": "Unknown action"})
+
+
+async def handle_manage_watchlist(args: dict) -> str:
+    """Handle manage_watchlist tool call.
+
+    Returns watchlist_actions that the frontend parses to add/remove
+    symbols from the watchlist.
+    """
+    action = args.get("action")
+    symbol = args.get("symbol", "").upper()
+
+    if action not in ("add", "remove"):
+        return json.dumps({"error": f"Invalid action: {action}. Must be add or remove."})
+    if not symbol:
+        return json.dumps({"error": "symbol is required"})
+
+    watchlist_action = {
+        "action": action,
+        "symbol": symbol,
+    }
+    return json.dumps({
+        "watchlist_actions": [watchlist_action],
+        "message": f"{'Adding' if action == 'add' else 'Removing'} {symbol} {'to' if action == 'add' else 'from'} watchlist",
+    })
 
 
 # ─── Dispatcher ───
@@ -1997,6 +3166,10 @@ TOOL_HANDLERS = {
     "list_saved_strategies": handle_list_strategies,
     "load_saved_strategy": handle_load_strategy,
     "create_chart_script": handle_create_chart_script,
+    "manage_chart_scripts": handle_manage_chart_scripts,
+    "control_ui": handle_control_ui,
+    "apply_chart_snippet": handle_apply_chart_snippet,
+    "list_chart_snippets": handle_list_chart_snippets,
     "get_trading_summary": handle_get_trading_summary,
     "query_trade_history": handle_query_trade_history,
     "get_backtest_history": handle_get_backtest_history,
@@ -2012,5 +3185,18 @@ TOOL_HANDLERS = {
     "search_news": handle_search_news,
     "query_prediction_markets": handle_query_prediction_markets,
     "fetch_labor_data": handle_fetch_labor_data,
+    "manage_holdings": handle_manage_holdings,
+    "manage_alerts": handle_manage_alerts,
+    # Phase 2: Read tools
+    "read_portfolio": handle_read_portfolio,
+    "read_journal": handle_read_journal,
+    "read_watchlist": handle_read_watchlist,
+    "read_chart_state": handle_read_chart_state,
+    "read_app_settings": handle_read_app_settings,
+    # Phase 3: Write tools
+    "manage_drawings": handle_manage_drawings,
+    "manage_indicators": handle_manage_indicators,
+    "manage_journal": handle_manage_journal,
+    "manage_watchlist": handle_manage_watchlist,
     # run_backtest, generate_pinescript, run_walk_forward, run_preset_strategy, run_parameter_sweep are special
 }

@@ -213,7 +213,7 @@ export default function SettingsPanel({ isOpen, onClose, settings, onUpdateSetti
                     style={{
                       flex: 1, padding: "8px 0", fontSize: 12, fontWeight: 600, fontFamily: "var(--font-mono)",
                       color: isActive ? "var(--accent)" : "var(--text-muted)",
-                      background: "transparent", border: "none",
+                      background: "transparent", borderTop: "none", borderRight: "none", borderLeft: "none",
                       borderBottom: isActive ? "2px solid var(--accent)" : "2px solid transparent",
                       cursor: "pointer", transition: "color 120ms ease", marginBottom: -1,
                     }}

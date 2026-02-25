@@ -1,25 +1,39 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, type TouchEvent as ReactTouchEvent } from "react";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "../../../convex/_generated/api";
+import { useCurrentUser } from "@/hooks/useConvexUser";
 import type { PortfolioQuote } from "@/lib/api";
 import { fetchPortfolioQuotes } from "@/lib/api";
 import { SYMBOL_LIBRARY } from "@/lib/symbols";
+import { ALLOCATION_COLORS, formatCurrency, formatPercent } from "@/lib/portfolio-utils";
+import { useHoldings } from "@/hooks/useHoldings";
 import SparklineSVG from "./shared/SparklineSVG";
-import { formatCurrency, formatPercent } from "@/lib/portfolio-utils";
+import AllocationDonut from "./AllocationDonut";
+
+type SidebarTab = "watchlist" | "insights";
 
 interface WatchlistSidebarProps {
   onSelectTicker: (ticker: string) => void;
 }
 
 export default function WatchlistSidebar({ onSelectTicker }: WatchlistSidebarProps) {
+  const [activeTab, setActiveTab] = useState<SidebarTab>("watchlist");
+
   const DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "GOOGL", "TSLA", "META", "AMZN", "V", "JPM"];
   const [watchlist, setWatchlist] = useState<string[]>(DEFAULT_WATCHLIST);
   const [wlHydrated, setWlHydrated] = useState(false);
 
+  // ─── Convex sync ───
+  const { isAuthenticated } = useCurrentUser();
+  const convexWatchlist = useQuery(api.watchlists.get, isAuthenticated ? {} : "skip");
+  const setConvexWatchlist = useMutation(api.watchlists.set);
+
   useEffect(() => {
     const saved = localStorage.getItem("afindr_watchlist");
     if (saved) {
-      try { setWatchlist(JSON.parse(saved)); } catch { /* ignore */ }
+      try { const parsed = JSON.parse(saved) as string[]; setWatchlist([...new Set(parsed)]); } catch { /* ignore */ }
     }
     setWlHydrated(true);
   }, []);
@@ -27,6 +41,19 @@ export default function WatchlistSidebar({ onSelectTicker }: WatchlistSidebarPro
   useEffect(() => {
     if (wlHydrated) localStorage.setItem("afindr_watchlist", JSON.stringify(watchlist));
   }, [watchlist, wlHydrated]);
+
+  const convexReconciledRef = useRef(false);
+  useEffect(() => {
+    if (!wlHydrated || !isAuthenticated || convexWatchlist === undefined || convexReconciledRef.current) return;
+    convexReconciledRef.current = true;
+    if (convexWatchlist && convexWatchlist.symbols.length > 0) {
+      setWatchlist([...new Set(convexWatchlist.symbols)]);
+      localStorage.setItem("afindr_watchlist", JSON.stringify(convexWatchlist.symbols));
+    } else {
+      setConvexWatchlist({ symbols: watchlist });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wlHydrated, isAuthenticated, convexWatchlist]);
 
   // ─── Collapsible Sections ───
   const [watchlistOpen, setWatchlistOpen] = useState(true);
@@ -64,20 +91,33 @@ export default function WatchlistSidebar({ onSelectTicker }: WatchlistSidebarPro
   }, [searchQuery, watchlist]);
 
   const addToWatchlist = useCallback((symbol: string) => {
-    setWatchlist((prev) => (prev.includes(symbol) ? prev : [...prev, symbol]));
+    setWatchlist((prev) => {
+      if (prev.includes(symbol)) return prev;
+      const next = [...prev, symbol];
+      if (isAuthenticated) setConvexWatchlist({ symbols: next });
+      return next;
+    });
     setShowSearch(false);
-  }, []);
+  }, [isAuthenticated, setConvexWatchlist]);
 
   const removeFromWatchlist = useCallback((symbol: string) => {
-    setWatchlist((prev) => prev.filter((s) => s !== symbol));
-  }, []);
+    setWatchlist((prev) => {
+      const next = prev.filter((s) => s !== symbol);
+      if (isAuthenticated) setConvexWatchlist({ symbols: next });
+      return next;
+    });
+  }, [isAuthenticated, setConvexWatchlist]);
 
-  // ─── Live Quotes ───
+  // ─── Holdings (for Insights tab) ───
+  const { holdings } = useHoldings();
+
+  // ─── Live Quotes (watchlist + holdings merged) ───
   const [quotes, setQuotes] = useState<Record<string, PortfolioQuote>>({});
 
   const allSymbols = useMemo(() => {
-    return [...new Set(watchlist)];
-  }, [watchlist]);
+    const holdingSyms = holdings.map((h) => h.symbol);
+    return [...new Set([...watchlist, ...holdingSyms])];
+  }, [watchlist, holdings]);
 
   useEffect(() => {
     if (allSymbols.length === 0) return;
@@ -99,11 +139,17 @@ export default function WatchlistSidebar({ onSelectTicker }: WatchlistSidebarPro
     };
   }, [allSymbols]);
 
-  // ─── Thesis sentiments from localStorage ───
-  const [thesisSentiments, setThesisSentiments] = useState<Record<string, "bullish" | "bearish" | "neutral">>({});
+  // ─── Thesis sentiments ───
+  const convexTheses = useQuery(api.theses.listByUser, isAuthenticated ? {} : "skip");
 
-  useEffect(() => {
+  const thesisSentiments = useMemo(() => {
     const sentiments: Record<string, "bullish" | "bearish" | "neutral"> = {};
+    if (convexTheses && convexTheses.length > 0) {
+      for (const t of convexTheses) {
+        sentiments[t.ticker] = t.sentiment;
+      }
+      return sentiments;
+    }
     for (const sym of watchlist) {
       const raw = localStorage.getItem(`afindr_thesis_${sym}`);
       if (raw) {
@@ -113,10 +159,10 @@ export default function WatchlistSidebar({ onSelectTicker }: WatchlistSidebarPro
         } catch { /* ignore */ }
       }
     }
-    setThesisSentiments(sentiments);
-  }, [watchlist]);
+    return sentiments;
+  }, [convexTheses, watchlist]);
 
-  // ─── Watchlist Entries with metadata ───
+  // ─── Watchlist entries ───
   const watchlistEntries = useMemo(() => {
     return watchlist.map((sym) => {
       const entry = SYMBOL_LIBRARY.find((s) => s.symbol === sym);
@@ -131,6 +177,37 @@ export default function WatchlistSidebar({ onSelectTicker }: WatchlistSidebarPro
       };
     });
   }, [watchlist, quotes]);
+
+  // ─── Insights data ───
+  const insightsData = useMemo(() => {
+    const holdingsWithGain = holdings.map((h, i) => {
+      const quote = quotes[h.symbol];
+      const price = quote?.price ?? 0;
+      const value = price > 0 ? price * h.shares : h.avgCostBasis * h.shares;
+      const gainPct = h.avgCostBasis > 0 && price > 0 ? ((price - h.avgCostBasis) / h.avgCostBasis) * 100 : 0;
+      return { ticker: h.symbol, value, gainPct, color: ALLOCATION_COLORS[i % ALLOCATION_COLORS.length] };
+    });
+
+    const totalValue = holdingsWithGain.reduce((s, h) => s + h.value, 0);
+    const sorted = [...holdingsWithGain].sort((a, b) => b.gainPct - a.gainPct);
+    const gainers = sorted.filter((h) => h.gainPct > 0).slice(0, 3);
+    const losers = sorted.filter((h) => h.gainPct < 0).slice(-3).reverse();
+
+    // Growth projection: 10% annual CAGR
+    const growth = {
+      current: totalValue,
+      oneYear: totalValue * 1.1,
+      fiveYear: totalValue * Math.pow(1.1, 5),
+    };
+
+    return {
+      allocations: holdingsWithGain.map((h) => ({ ticker: h.ticker, value: h.value, color: h.color })),
+      totalValue,
+      gainers,
+      losers,
+      growth,
+    };
+  }, [holdings, quotes]);
 
   return (
     <div
@@ -149,189 +226,417 @@ export default function WatchlistSidebar({ onSelectTicker }: WatchlistSidebarPro
         scrollbarWidth: "none",
       }}
     >
-      {/* ─── Watchlist Section ─── */}
-      <div>
-        <div
-          className="flex items-center justify-between"
-          style={{
-            padding: "12px 16px",
-            borderBottom: "1px solid var(--border-subtle)",
-          }}
-        >
+      {/* ─── Tab Bar ─── */}
+      <div className="flex" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+        {(["watchlist", "insights"] as const).map((tab) => (
           <button
-            onClick={() => setWatchlistOpen(!watchlistOpen)}
-            className="flex items-center gap-2"
-            style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 0 }}
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            style={{
+              flex: 1, padding: "10px 0", borderTop: "none", borderRight: "none", borderLeft: "none", cursor: "pointer",
+              background: "transparent",
+              fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)",
+              textTransform: "uppercase", letterSpacing: "0.05em",
+              color: activeTab === tab ? "var(--accent)" : "var(--text-muted)",
+              borderBottom: activeTab === tab ? "2px solid var(--accent)" : "2px solid transparent",
+              transition: "color 100ms ease, border-color 100ms ease",
+            }}
           >
-            <span style={{ fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              Watchlist
-            </span>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
-              style={{ transform: watchlistOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 150ms ease" }}>
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
+            {tab}
           </button>
+        ))}
+      </div>
 
-          {/* Add button + search */}
-          <div ref={searchContainerRef} style={{ position: "relative" }}>
+      {/* ─── Watchlist Tab ─── */}
+      {activeTab === "watchlist" && (
+        <div>
+          <div
+            className="flex items-center justify-between"
+            style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-subtle)" }}
+          >
             <button
-              onClick={(e) => { e.stopPropagation(); setShowSearch(!showSearch); }}
-              style={{
-                display: "flex", alignItems: "center", gap: 4,
-                padding: "3px 8px", borderRadius: 6,
-                background: showSearch ? "rgba(236,227,213,0.08)" : "rgba(236,227,213,0.04)",
-                border: "1px solid rgba(236,227,213,0.08)",
-                color: "var(--text-secondary)", fontSize: 10, fontWeight: 500, cursor: "pointer",
-              }}
+              onClick={() => setWatchlistOpen(!watchlistOpen)}
+              className="flex items-center gap-2"
+              style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 0 }}
             >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+              <span style={{ fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Watchlist
+              </span>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+                style={{ transform: watchlistOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 150ms ease" }}>
+                <polyline points="6 9 12 15 18 9" />
               </svg>
-              Add
             </button>
 
-            {showSearch && (
-              <div
+            <div ref={searchContainerRef} style={{ position: "relative" }}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowSearch(!showSearch); }}
                 style={{
-                  position: "absolute", top: "100%", right: 0, marginTop: 6,
-                  width: 260, background: "rgba(24,22,18,0.98)",
-                  border: "1px solid rgba(236,227,213,0.12)", borderRadius: 12,
-                  boxShadow: "0 12px 40px rgba(15,12,8,0.6)",
-                  backdropFilter: "blur(20px)", zIndex: 50, overflow: "hidden",
+                  display: "flex", alignItems: "center", gap: 4,
+                  padding: "3px 8px", borderRadius: 6,
+                  background: showSearch ? "rgba(236,227,213,0.08)" : "rgba(236,227,213,0.04)",
+                  border: "1px solid rgba(236,227,213,0.08)",
+                  color: "var(--text-secondary)", fontSize: 10, fontWeight: 500, cursor: "pointer",
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderBottom: "1px solid rgba(236,227,213,0.08)" }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2">
-                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                  </svg>
-                  <input
-                    ref={searchInputRef}
-                    type="text" value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search symbols..."
-                    style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 12, color: "white" }}
-                  />
-                </div>
-                <div style={{ maxHeight: 240, overflowY: "auto" }}>
-                  {searchResults.length === 0 && searchQuery && (
-                    <div style={{ padding: "16px 12px", textAlign: "center", color: "var(--text-muted)", fontSize: 11 }}>
-                      No matches found
-                    </div>
-                  )}
-                  {!searchQuery && (
-                    <div style={{ padding: "16px 12px", textAlign: "center", color: "var(--text-muted)", fontSize: 11 }}>
-                      Type to search
-                    </div>
-                  )}
-                  {searchResults.map((entry) => (
-                    <button
-                      key={entry.symbol}
-                      onClick={() => addToWatchlist(entry.symbol)}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 8, width: "100%",
-                        padding: "8px 12px", border: "none", cursor: "pointer",
-                        background: "transparent", color: "var(--text-primary)", textAlign: "left",
-                      }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(236,227,213,0.04)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                    >
-                      <span style={{ fontWeight: 600, fontSize: 12, fontFamily: "var(--font-mono)", minWidth: 56 }}>{entry.symbol}</span>
-                      <span style={{ fontSize: 11, color: "var(--text-muted)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                Add
+              </button>
 
-        {watchlistOpen && (
-          <div>
-            {watchlistEntries.length === 0 ? (
-              <div style={{ padding: "20px 16px", textAlign: "center", color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
-                No symbols in watchlist
-              </div>
-            ) : (
-              watchlistEntries.map((entry) => {
-                const isPositive = entry.changePct >= 0;
-                return (
-                  <div
-                    key={entry.symbol}
-                    className="flex items-center"
-                    style={{
-                      padding: "10px 16px",
-                      borderBottom: "1px solid var(--border-subtle)",
-                      cursor: "pointer", transition: "background 80ms ease",
-                      position: "relative",
-                    }}
-                    onClick={() => onSelectTicker(entry.symbol)}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = "rgba(236,227,213,0.03)";
-                      const btn = e.currentTarget.querySelector("[data-remove]") as HTMLElement;
-                      if (btn) btn.style.opacity = "1";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = "transparent";
-                      const btn = e.currentTarget.querySelector("[data-remove]") as HTMLElement;
-                      if (btn) btn.style.opacity = "0";
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="flex items-center" style={{ gap: 5, fontSize: 13, fontWeight: 600, color: "var(--accent-bright)", fontFamily: "var(--font-mono)" }}>
-                        {entry.symbol}
-                        {thesisSentiments[entry.symbol] && (
-                          <span
-                            title={`Thesis: ${thesisSentiments[entry.symbol]}`}
-                            style={{
-                              width: 6, height: 6, borderRadius: "50%", display: "inline-block", flexShrink: 0,
-                              background: thesisSentiments[entry.symbol] === "bullish" ? "var(--buy)" : thesisSentiments[entry.symbol] === "bearish" ? "var(--sell)" : "var(--warning)",
-                            }}
-                          />
-                        )}
-                      </div>
-                      <div style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 100 }}>
-                        {entry.name}
-                      </div>
-                    </div>
-                    <div style={{ marginRight: 8 }}>
-                      <SparklineSVG data={entry.sparkline} positive={isPositive} />
-                    </div>
-                    <div style={{ textAlign: "right", minWidth: 56 }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--text-primary)" }}>
-                        {entry.price > 0 ? formatCurrency(entry.price) : "-"}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums",
-                          color: isPositive ? "var(--buy)" : "var(--sell)", marginTop: 2,
-                        }}
-                      >
-                        {formatPercent(entry.changePct)}
-                      </div>
-                    </div>
-                    <button
-                      data-remove
-                      onClick={(e) => { e.stopPropagation(); removeFromWatchlist(entry.symbol); }}
-                      style={{
-                        position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)",
-                        background: "transparent", border: "none", cursor: "pointer",
-                        color: "var(--text-muted)", padding: 4, borderRadius: 4,
-                        opacity: 0, transition: "opacity 100ms ease, color 100ms ease",
-                      }}
-                      onMouseEnter={(e) => { e.currentTarget.style.color = "var(--sell)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
-                      title="Remove from watchlist"
-                    >
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                      </svg>
-                    </button>
+              {showSearch && (
+                <div
+                  style={{
+                    position: "absolute", top: "100%", right: 0, marginTop: 6,
+                    width: 260, background: "rgba(24,22,18,0.98)",
+                    border: "1px solid rgba(236,227,213,0.12)", borderRadius: 12,
+                    boxShadow: "0 12px 40px rgba(15,12,8,0.6)",
+                    backdropFilter: "blur(20px)", zIndex: 50, overflow: "hidden",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderBottom: "1px solid rgba(236,227,213,0.08)" }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2">
+                      <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <input
+                      ref={searchInputRef}
+                      type="text" value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search symbols..."
+                      style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 12, color: "white" }}
+                    />
                   </div>
-                );
-              })
-            )}
+                  <div style={{ maxHeight: 240, overflowY: "auto" }}>
+                    {searchResults.length === 0 && searchQuery && (
+                      <div style={{ padding: "16px 12px", textAlign: "center", color: "var(--text-muted)", fontSize: 11 }}>
+                        No matches found
+                      </div>
+                    )}
+                    {!searchQuery && (
+                      <div style={{ padding: "16px 12px", textAlign: "center", color: "var(--text-muted)", fontSize: 11 }}>
+                        Type to search
+                      </div>
+                    )}
+                    {searchResults.map((entry) => (
+                      <button
+                        key={entry.symbol}
+                        onClick={() => addToWatchlist(entry.symbol)}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 8, width: "100%",
+                          padding: "8px 12px", border: "none", cursor: "pointer",
+                          background: "transparent", color: "var(--text-primary)", textAlign: "left",
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(236,227,213,0.04)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                      >
+                        <span style={{ fontWeight: 600, fontSize: 12, fontFamily: "var(--font-mono)", minWidth: 56 }}>{entry.symbol}</span>
+                        <span style={{ fontSize: 11, color: "var(--text-muted)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        )}
+
+          {watchlistOpen && (
+            <div>
+              {watchlistEntries.length === 0 ? (
+                <div style={{ padding: "20px 16px", textAlign: "center", color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
+                  No symbols in watchlist
+                </div>
+              ) : (
+                watchlistEntries.map((entry, idx) => {
+                  const isPositive = entry.changePct >= 0;
+                  return (
+                    <SwipeToDeleteRow
+                      key={`${entry.symbol}-${idx}`}
+                      onDelete={() => removeFromWatchlist(entry.symbol)}
+                    >
+                      <div
+                        className="flex items-center"
+                        style={{
+                          padding: "10px 16px",
+                          borderBottom: "1px solid var(--border-subtle)",
+                          cursor: "pointer", transition: "background 80ms ease",
+                          background: "rgba(24,22,18,0.92)",
+                        }}
+                        onClick={() => onSelectTicker(entry.symbol)}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(236,227,213,0.03)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(24,22,18,0.92)"; }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="flex items-center" style={{ gap: 5, fontSize: 13, fontWeight: 600, color: "var(--accent-bright)", fontFamily: "var(--font-mono)" }}>
+                            {entry.symbol}
+                            {thesisSentiments[entry.symbol] && (
+                              <span
+                                title={`Thesis: ${thesisSentiments[entry.symbol]}`}
+                                style={{
+                                  width: 6, height: 6, borderRadius: "50%", display: "inline-block", flexShrink: 0,
+                                  background: thesisSentiments[entry.symbol] === "bullish" ? "var(--buy)" : thesisSentiments[entry.symbol] === "bearish" ? "var(--sell)" : "var(--warning)",
+                                }}
+                              />
+                            )}
+                          </div>
+                          <div style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 100 }}>
+                            {entry.name}
+                          </div>
+                        </div>
+                        <div style={{ marginRight: 8 }}>
+                          <SparklineSVG data={entry.sparkline} positive={isPositive} />
+                        </div>
+                        <div style={{ textAlign: "right", minWidth: 56 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--text-primary)" }}>
+                            {entry.price > 0 ? formatCurrency(entry.price) : "-"}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums",
+                              color: isPositive ? "var(--buy)" : "var(--sell)", marginTop: 2,
+                            }}
+                          >
+                            {formatPercent(entry.changePct)}
+                          </div>
+                        </div>
+                      </div>
+                    </SwipeToDeleteRow>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ─── Insights Tab ─── */}
+      {activeTab === "insights" && (
+        <div style={{ padding: "16px" }}>
+          {holdings.length === 0 ? (
+            <div style={{ padding: "24px 0", textAlign: "center", color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
+              Add holdings to see insights
+            </div>
+          ) : (
+            <>
+              {/* Allocation Donut */}
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
+                <AllocationDonut
+                  allocations={insightsData.allocations}
+                  totalValue={insightsData.totalValue}
+                  size={200}
+                />
+              </div>
+
+              {/* Top Gainers */}
+              {insightsData.gainers.length > 0 && (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{
+                    fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)",
+                    color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em",
+                    marginBottom: 10,
+                  }}>
+                    Top Gainers
+                  </div>
+                  {insightsData.gainers.map((g) => {
+                    const maxGain = Math.max(...insightsData.gainers.map((x) => Math.abs(x.gainPct)), 1);
+                    const barWidth = Math.min(100, (Math.abs(g.gainPct) / maxGain) * 100);
+                    return (
+                      <div key={g.ticker} className="flex items-center" style={{ gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)", color: "var(--text-primary)", minWidth: 40 }}>
+                          {g.ticker}
+                        </span>
+                        <div style={{ flex: 1, height: 6, borderRadius: 3, background: "rgba(34,171,148,0.1)", overflow: "hidden" }}>
+                          <div style={{ width: `${barWidth}%`, height: "100%", borderRadius: 3, background: "var(--buy)", transition: "width 300ms ease" }} />
+                        </div>
+                        <span style={{ fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)", color: "var(--buy)", minWidth: 48, textAlign: "right" }}>
+                          +{g.gainPct.toFixed(1)}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Top Losers */}
+              {insightsData.losers.length > 0 && (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{
+                    fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)",
+                    color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em",
+                    marginBottom: 10,
+                  }}>
+                    Top Losers
+                  </div>
+                  {insightsData.losers.map((l) => {
+                    const maxLoss = Math.max(...insightsData.losers.map((x) => Math.abs(x.gainPct)), 1);
+                    const barWidth = Math.min(100, (Math.abs(l.gainPct) / maxLoss) * 100);
+                    return (
+                      <div key={l.ticker} className="flex items-center" style={{ gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)", color: "var(--text-primary)", minWidth: 40 }}>
+                          {l.ticker}
+                        </span>
+                        <div style={{ flex: 1, height: 6, borderRadius: 3, background: "rgba(229,77,77,0.1)", overflow: "hidden" }}>
+                          <div style={{ width: `${barWidth}%`, height: "100%", borderRadius: 3, background: "var(--sell)", transition: "width 300ms ease" }} />
+                        </div>
+                        <span style={{ fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)", color: "var(--sell)", minWidth: 48, textAlign: "right" }}>
+                          {l.gainPct.toFixed(1)}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Growth Projection */}
+              <div>
+                <div style={{
+                  fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)",
+                  color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em",
+                  marginBottom: 10,
+                }}>
+                  Growth Projection
+                </div>
+                <div style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginBottom: 8 }}>
+                  10% annual CAGR estimate
+                </div>
+                <div className="flex items-end" style={{ gap: 8, height: 80 }}>
+                  {([
+                    { label: "Now", value: insightsData.growth.current },
+                    { label: "1Y", value: insightsData.growth.oneYear },
+                    { label: "5Y", value: insightsData.growth.fiveYear },
+                  ] as const).map((bar) => {
+                    const maxVal = insightsData.growth.fiveYear || 1;
+                    const barHeight = Math.max(8, (bar.value / maxVal) * 64);
+                    return (
+                      <div key={bar.label} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                        <span style={{ fontSize: 9, fontWeight: 600, fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
+                          {formatCurrency(bar.value)}
+                        </span>
+                        <div style={{
+                          width: "100%", height: barHeight, borderRadius: 4,
+                          background: bar.label === "Now" ? "var(--accent)" : bar.label === "1Y" ? "rgba(196,123,58,0.5)" : "rgba(196,123,58,0.25)",
+                          transition: "height 300ms ease",
+                        }} />
+                        <span style={{ fontSize: 9, fontWeight: 600, fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>
+                          {bar.label}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Swipe-to-delete row (touch + mouse drag) ───
+
+function SwipeToDeleteRow({ children, onDelete }: { children: React.ReactNode; onDelete: () => void }) {
+  const rowRef = useRef<HTMLDivElement>(null);
+  const startXRef = useRef(0);
+  const startTimeRef = useRef(0);
+  const lastXRef = useRef(0);
+  const swipingRef = useRef(false);
+  const [offsetX, setOffsetX] = useState(0);
+  const [willDelete, setWillDelete] = useState(false);
+  const FLICK_VELOCITY = 0.6; // px/ms — fast flick triggers delete
+  const DRAG_THRESHOLD = 80;  // px — slow drag past this triggers delete
+
+  const handleStart = useCallback((clientX: number) => {
+    startXRef.current = clientX;
+    lastXRef.current = clientX;
+    startTimeRef.current = Date.now();
+    swipingRef.current = false;
+  }, []);
+
+  const handleMove = useCallback((clientX: number) => {
+    const dx = clientX - startXRef.current;
+    if (Math.abs(dx) > 8) swipingRef.current = true;
+    lastXRef.current = clientX;
+    const clamped = Math.max(-140, Math.min(140, dx));
+    setOffsetX(clamped);
+    setWillDelete(Math.abs(clamped) > DRAG_THRESHOLD);
+  }, []);
+
+  const handleEnd = useCallback(() => {
+    const dx = lastXRef.current - startXRef.current;
+    const dt = Math.max(1, Date.now() - startTimeRef.current);
+    const velocity = Math.abs(dx) / dt; // px/ms
+
+    const shouldDelete = willDelete || (Math.abs(dx) > 30 && velocity > FLICK_VELOCITY);
+
+    if (shouldDelete) {
+      setOffsetX(dx < 0 ? -400 : 400);
+      setWillDelete(true);
+      setTimeout(onDelete, 180);
+    } else {
+      setOffsetX(0);
+      setWillDelete(false);
+    }
+  }, [willDelete, onDelete]);
+
+  // Touch events
+  const onTouchStart = useCallback((e: ReactTouchEvent) => handleStart(e.touches[0].clientX), [handleStart]);
+  const onTouchMove = useCallback((e: ReactTouchEvent) => handleMove(e.touches[0].clientX), [handleMove]);
+  const onTouchEnd = useCallback(() => handleEnd(), [handleEnd]);
+
+  // Mouse drag events
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    handleStart(e.clientX);
+    const onMM = (ev: MouseEvent) => handleMove(ev.clientX);
+    const onMU = () => {
+      handleEnd();
+      window.removeEventListener("mousemove", onMM);
+      window.removeEventListener("mouseup", onMU);
+    };
+    window.addEventListener("mousemove", onMM);
+    window.addEventListener("mouseup", onMU);
+  }, [handleStart, handleMove, handleEnd]);
+
+  // Prevent click when swiping
+  const onClickCapture = useCallback((e: React.MouseEvent) => {
+    if (swipingRef.current) { e.stopPropagation(); e.preventDefault(); }
+  }, []);
+
+  return (
+    <div style={{ position: "relative", overflow: "hidden" }}>
+      {/* Delete background — appears on opposite side of drag */}
+      {offsetX !== 0 && (
+        <div
+          style={{
+            position: "absolute", inset: 0,
+            background: willDelete ? "#0f0c08" : "rgba(15,12,8,0.85)",
+            display: "flex", alignItems: "center",
+            justifyContent: offsetX < 0 ? "flex-end" : "flex-start",
+            padding: offsetX < 0 ? "0 20px 0 0" : "0 0 0 20px",
+            transition: "background 100ms ease",
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={willDelete ? "var(--sell)" : "#fff"} strokeWidth="2" strokeLinecap="round" style={{ opacity: Math.min(1, Math.abs(offsetX) / 60) }}>
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          </svg>
+        </div>
+      )}
+      {/* Sliding content */}
+      <div
+        ref={rowRef}
+        style={{
+          transform: `translateX(${offsetX}px)`,
+          transition: swipingRef.current ? "none" : "transform 220ms cubic-bezier(0.25,0.1,0.25,1)",
+          position: "relative", zIndex: 1,
+        }}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onMouseDown={onMouseDown}
+        onClickCapture={onClickCapture}
+      >
+        {children}
       </div>
     </div>
   );

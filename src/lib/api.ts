@@ -314,6 +314,19 @@ export async function fetchStockChart(
   return res.json();
 }
 
+// ─── Benchmark Chart ───
+
+export async function fetchBenchmarkChart(period: string): Promise<{ time: number; value: number }[]> {
+  const res = await fetch(`${API_BASE}/portfolio/stock/^GSPC/chart`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ period }),
+  });
+  if (!res.ok) return [];
+  const { points } = await res.json();
+  return (points || []).map((p: { timestamp: number; close: number }) => ({ time: p.timestamp * 1000, value: p.close }));
+}
+
 // ─── Strategies API ───
 
 export interface StrategySummary {

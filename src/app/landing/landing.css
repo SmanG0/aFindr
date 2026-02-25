@@ -133,6 +133,80 @@
   box-shadow: 0 0 24px rgba(196, 123, 58, 0.3);
 }
 
+/* ─── Landing Ticker Banner ─── */
+.landing-ticker-banner {
+  position: fixed;
+  top: 64px;
+  left: 0;
+  right: 0;
+  z-index: 99;
+  height: 30px;
+  background: rgba(26, 23, 20, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 0.667px solid rgba(236, 227, 213, 0.05);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.landing-ticker-track {
+  display: flex;
+  align-items: center;
+  animation: landing-marquee 50s linear infinite;
+}
+
+.landing-ticker-banner:hover .landing-ticker-track {
+  animation-play-state: paused;
+}
+
+.landing-ticker-set {
+  display: flex;
+  align-items: center;
+  padding-right: 24px;
+}
+
+.landing-ticker-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 16px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.landing-ticker-symbol {
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.03em;
+  font-size: 9px;
+}
+
+.landing-ticker-price {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.landing-ticker-change {
+  font-weight: 600;
+  font-size: 9px;
+}
+
+.landing-ticker-change.up {
+  color: var(--buy);
+}
+
+.landing-ticker-change.down {
+  color: var(--sell);
+}
+
+@keyframes landing-marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
 /* ─── Hero Section ─── */
 .landing-hero {
   position: relative;
@@ -142,6 +216,7 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  padding-top: 30px;
 }
 
 /* Gradient Mesh Background */
@@ -248,6 +323,19 @@
   100% { stroke-dashoffset: -800; }
 }
 
+/* Hero bottom fade — dissolves into page background */
+.landing-hero::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 160px;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  z-index: 2;
+  pointer-events: none;
+}
+
 /* Hero Content */
 .hero-content {
   position: relative;
@@ -350,6 +438,7 @@
   box-shadow: var(--shadow-md);
   transition: all var(--duration-slow) var(--ease-out-expo);
   overflow: hidden;
+  height: 100%;
 }
 
 /* Liquid gradient border via pseudo-element */
@@ -1032,6 +1121,26 @@
   overflow: hidden;
 }
 
+/* Fade overlays — dissolve the map top & bottom like the hero fade */
+.trust-strip::before,
+.trust-strip::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 140px;
+  z-index: 1;
+  pointer-events: none;
+}
+.trust-strip::before {
+  top: 0;
+  background: linear-gradient(to bottom, var(--bg), transparent);
+}
+.trust-strip::after {
+  bottom: 0;
+  background: linear-gradient(to top, var(--bg), transparent);
+}
+
 .trust-strip-bg {
   position: absolute;
   left: 50%;
@@ -1039,19 +1148,18 @@
   transform: translate(-50%, -50%);
   width: 1100px;
   height: auto;
-  opacity: 0.09;
+  opacity: 0.06;
   pointer-events: none;
   filter:
     brightness(0.6)
     sepia(1)
     hue-rotate(-10deg)
     saturate(3)
-    drop-shadow(0 0 8px rgba(196, 123, 58, 0.4))
-    drop-shadow(0 0 24px rgba(196, 123, 58, 0.15));
+    blur(3px);
   mix-blend-mode: screen;
   -webkit-mask-image:
-    linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%),
-    linear-gradient(to right, transparent 0%, black 10%, black 90%, transparent 100%);
+    linear-gradient(to bottom, transparent 0%, black 25%, black 75%, transparent 100%),
+    linear-gradient(to right, transparent 0%, black 15%, black 85%, transparent 100%);
   -webkit-mask-composite: destination-in;
   mask-image:
     linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%),

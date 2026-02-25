@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { AccountState } from "@/lib/types";
+import type { AppPage } from "@/components/PageNav/PageNav";
 import PortfolioDashboard from "./PortfolioDashboard";
 import WatchlistSidebar from "./WatchlistSidebar";
 import StockDetailView from "./StockDetailView";
@@ -12,10 +13,24 @@ interface PortfolioPageProps {
   accountState: AccountState;
   currentPrice: number;
   onNavigateToChart?: (ticker: string) => void;
+  onPageChange?: (page: AppPage) => void;
+  onOpenSettings?: () => void;
+  initialTicker?: string | null;
+  onInitialTickerConsumed?: () => void;
 }
 
-export default function PortfolioPage({ accountState, currentPrice, onNavigateToChart }: PortfolioPageProps) {
-  const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
+export default function PortfolioPage({ accountState, currentPrice, onNavigateToChart, onPageChange, onOpenSettings, initialTicker, onInitialTickerConsumed }: PortfolioPageProps) {
+  const [selectedTicker, setSelectedTicker] = useState<string | null>(initialTicker ?? null);
+
+  // Consume initialTicker when it changes (e.g. navigating from dashboard)
+  useEffect(() => {
+    if (initialTicker) {
+      setSelectedTicker(initialTicker);
+      setDetailPrice(0);
+      setDetailName(initialTicker);
+      onInitialTickerConsumed?.();
+    }
+  }, [initialTicker, onInitialTickerConsumed]);
 
   // Track detail data for the order panel
   const [detailPrice, setDetailPrice] = useState(0);
@@ -48,6 +63,8 @@ export default function PortfolioPage({ accountState, currentPrice, onNavigateTo
             <PortfolioDashboard
               accountState={accountState}
               onSelectTicker={handleSelectTicker}
+              onPageChange={onPageChange ?? (() => {})}
+              onOpenSettings={onOpenSettings ?? (() => {})}
             />
             {/* Right column: padded so the card floats with margin */}
             <div style={{ padding: 16, flexShrink: 0 }}>
