@@ -16,7 +16,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: "aFindr — Join the Waitlist",
-  description: "AI-powered trading for the Nairobi Securities Exchange. Join the waitlist for early access.",
+  description: "AI-powered trading for stocks, futures, and forex. Join the waitlist for early access.",
 };
 
 export default function RootLayout({

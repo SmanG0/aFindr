@@ -1,0 +1,5 @@
+# Exclude from Vercel deployment (belt-and-suspenders)
+.env
+.env.*
+.env.example
+scripts/
