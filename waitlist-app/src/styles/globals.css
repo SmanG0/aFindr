@@ -1,11 +1,11 @@
 @import "tailwindcss";
 
 :root {
-  /* Core Background (TradingView Dark) */
-  --bg: #131722;
-  --bg-raised: #1e222d;
-  --bg-surface: #1e222d;
-  --bg-overlay: #2a2e39;
+  /* Core Background (Warm Dark) */
+  --bg: #1a1714;
+  --bg-raised: #231f1b;
+  --bg-surface: #231f1b;
+  --bg-overlay: #2e2924;
 
   /* Accent System (Amber) */
   --accent: #c47b3a;
