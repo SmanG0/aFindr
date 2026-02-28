@@ -7,11 +7,11 @@
   --bg-surface: #1e222d;
   --bg-overlay: #2a2e39;
 
-  /* Accent System */
-  --accent: #2962ff;
-  --accent-bright: #3b7dff;
-  --accent-glow: rgba(41,98,255,0.18);
-  --accent-muted: rgba(41,98,255,0.08);
+  /* Accent System (Amber) */
+  --accent: #c47b3a;
+  --accent-bright: #d4944f;
+  --accent-glow: rgba(196,123,58,0.18);
+  --accent-muted: rgba(196,123,58,0.08);
 
   /* Semantic */
   --buy: #26a69a;
